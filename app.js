@@ -13,29 +13,41 @@ const ls = {
   get(k){ try { return JSON.parse(localStorage.getItem(k)); } catch(e){ return null; } },
   set(k,v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} }
 };
-const save = () => ls.set('solaria:' + user, db);
 const I = id => db.inst.find(i => i.id == id);
 const rows = id => db.gen.filter(g => g.inst == id).sort((a,b) => a.date < b.date ? -1 : 1);
 const kwp = p => p.panels.reduce((s,x) => s + x.qty * x.wp, 0) / 1000;      // potencia instalada = Σ cantidad × Wp
 const nPan = p => p.panels.reduce((s,x) => s + x.qty, 0);
 const pr = (g, k) => g.irr > 0.5 ? g.kwh / (k * g.irr) : null;               // Performance Ratio
 
-/* ---------- usuarios (simulado en el navegador; en producción iría en un backend) ---------- */
-async function hash(s){
-  if (!(window.crypto && crypto.subtle)) return btoa(s);
-  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
-  return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2,'0')).join('');
-}
+/* ---------- Supabase: cuentas y datos ---------- */
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 async function auth(reg){
-  const u = $('#u').value.trim().toLowerCase(), p = $('#p').value, e = $('#err');
-  if (!u || p.length < 4) return e.textContent = 'Ingresá usuario y una clave de al menos 4 caracteres.';
-  const U = ls.get('solaria_users') || {}, h = await hash(p);
-  if (reg) { if (U[u]) return e.textContent = 'Ese usuario ya existe.'; U[u] = h; ls.set('solaria_users', U); }
-  else if (U[u] !== h) return e.textContent = 'Usuario o clave incorrectos.';
-  ls.set('solaria_session', u); start(u);
+  const email = $('#u').value.trim(), pass = $('#p').value, e = $('#err');
+  if (!email || pass.length < 6) return e.textContent = 'Ingresá un email y una clave de al menos 6 caracteres.';
+  const {data, error} = reg ? await sb.auth.signUp({email, password:pass}) : await sb.auth.signInWithPassword({email, password:pass});
+  if (error) return e.textContent = error.message;
+  if (!data.session) return e.textContent = 'Cuenta creada. Confirmá tu email y después ingresá.';
+  await start(data.session.user);
 }
-function start(u){ user = u; db = ls.get('solaria:' + u) || {inst:[], gen:[], ev:[], nid:1}; boot(); }
-function logout(){ ls.set('solaria_session', null); user = db = cur = null; boot(); }
+async function start(u){ user = u; await loadAll(); boot(); }
+async function logout(){ await sb.auth.signOut(); user = db = cur = null; boot(); }
+function fail(error){ if (error) { alert('Error de base de datos: ' + error.message); return true; } return false; }
+// Ejecuta una consulta, recarga los datos y vuelve a dibujar
+async function run(q, after = render){ const {error} = await q; if (fail(error)) return; await loadAll(); after(); }
+// Descarga las 4 tablas (RLS hace que solo lleguen las filas del usuario) y arma el objeto db
+async function loadAll(){
+  const T = ['projects','panels','generation','events'];
+  const R = await Promise.all(T.map(t => sb.from(t).select('*').range(0, 9999)));
+  const bad = R.find(r => r.error); if (bad) return fail(bad.error);
+  const [p, pa, g, ev] = R.map(r => r.data);
+  p.sort((a,b) => a.created_at < b.created_at ? -1 : 1);
+  db = {
+    inst: p.map(x => ({id:x.id, name:x.name, loc:x.location || '', date:x.start_date || '', use:x.use || 'Otro', useDetail:x.use_detail || '', inv:x.inverter || '', desc:x.description || '',
+      panels: pa.filter(y => y.project_id == x.id).map(y => ({id:y.id, brand:y.brand || '', model:y.model || '', qty:y.qty, wp:+y.wp, type:y.type || '', eff:+y.eff}))})),
+    gen: g.map(x => ({inst:x.project_id, date:x.date, kwh:+x.kwh, pk:+x.pk, irr:+x.irr})),
+    ev:  ev.map(x => ({id:x.id, inst:x.project_id, date:x.date, type:x.type, desc:x.description || ''}))
+  };
+}
 
 /* ---------- datos de ejemplo (simulados) ---------- */
 function seed(){
@@ -133,7 +145,7 @@ function fichaProyecto(i){
     <div class="row" style="margin-top:8px"><button class="pri" onclick="saveProj()">Guardar ficha</button><button onclick="delProj()">Eliminar proyecto</button></div></div>
   <div class="card sc"><h2>Paneles solares – potencia instalada: ${f1(kwp(i))} kWp (${nPan(i)} paneles)</h2>
     <table><tr><th>Marca</th><th>Modelo</th><th>Cant.</th><th>Wp</th><th>Tipo</th><th>Efic. %</th><th></th></tr>
-    ${i.panels.map((x,n) => `<tr><td>${esc(x.brand)}</td><td>${esc(x.model)}</td><td>${x.qty}</td><td>${x.wp}</td><td>${esc(x.type)}</td><td>${x.eff}</td><td><button onclick="delPanel(${n})">✕</button></td></tr>`).join('') || '<tr><td colspan="7" class="mu">Aún no cargaste paneles.</td></tr>'}</table>
+    ${i.panels.map((x,n) => `<tr><td>${esc(x.brand)}</td><td>${esc(x.model)}</td><td>${x.qty}</td><td>${x.wp}</td><td>${esc(x.type)}</td><td>${x.eff}</td><td><button onclick="delPanel('${x.id}')">✕</button></td></tr>`).join('') || '<tr><td colspan="7" class="mu">Aún no cargaste paneles.</td></tr>'}</table>
     <h2 style="margin-top:14px">Agregar paneles</h2>
     <div class="row"><label>Marca<input id="pb"></label><label>Modelo<input id="pm"></label><label>Cantidad<input id="pq" type="number" min="1" value="1" style="width:80px"></label><label>Potencia (Wp)<input id="pw" type="number" min="1" style="width:100px"></label>
     <label>Tipo<select id="pt"><option>Monocristalino</option><option>Policristalino</option><option>Película delgada</option></select></label><label>Eficiencia %<input id="pe" type="number" step="0.1" style="width:90px"></label><button class="pri" onclick="addPanel()">Agregar</button></div></div>`;
@@ -162,7 +174,7 @@ const V = {
       <div class="row" style="margin-top:8px"><button class="pri" onclick="addProj()">Crear proyecto</button></div></div>
     <div class="grid">${db.inst.map(p => `<div class="card"><h2>${esc(p.name)}</h2><p class="mu">${esc(p.loc)}</p>
       <p><b>${f1(kwp(p))} kWp</b> · ${nPan(p)} paneles<br>Alimenta: ${esc(p.use)}</p>
-      <button onclick="cur=${p.id};boot()">Abrir ficha</button></div>`).join('')}</div>
+      <button onclick="cur='${p.id}';boot()">Abrir ficha</button></div>`).join('')}</div>
     ${I(cur) ? fichaProyecto(I(cur)) : ''}`;
   },
   gen(){
@@ -185,7 +197,7 @@ const V = {
     return `<div class="card"><h2>Registrar falla o mantenimiento</h2><div class="row"><label>Fecha<input type="date" id="ed" value="${iso(new Date())}"></label>
       <label>Tipo<select id="et"><option>Falla</option><option>Mantenimiento</option></select></label><label>Descripción<input id="edsc" size="34"></label><button class="pri" onclick="addEv()">Guardar</button></div></div>
     <div class="card sc"><table><tr><th>Fecha</th><th>Tipo</th><th>Descripción</th><th></th></tr>
-    ${E.map(e => `<tr><td>${e.date}</td><td><span class="tag ${e.type == 'Falla' ? 'alta' : 'okc'}">${e.type}</span></td><td style="white-space:normal">${esc(e.desc)}</td><td><button onclick="delEv(${e.id})">✕</button></td></tr>`).join('') || '<tr><td colspan="4" class="mu">Sin registros.</td></tr>'}</table></div>`;
+    ${E.map(e => `<tr><td>${e.date}</td><td><span class="tag ${e.type == 'Falla' ? 'alta' : 'okc'}">${e.type}</span></td><td style="white-space:normal">${esc(e.desc)}</td><td><button onclick="delEv('${e.id}')">✕</button></td></tr>`).join('') || '<tr><td colspan="4" class="mu">Sin registros.</td></tr>'}</table></div>`;
   },
   ia(){
     const a = analyze(cur), ins = I(cur);
@@ -202,41 +214,52 @@ const V = {
   }
 };
 
-/* ---------- acciones ---------- */
-function addProj(){
+/* ---------- acciones (cada una escribe en Supabase y recarga) ---------- */
+async function addProj(){
   const n = $('#n').value.trim(); if (!n) return alert('Ingresá un nombre para el proyecto.');
-  const id = db.nid++;
-  db.inst.push({id, name:n, loc:$('#l').value, date:$('#d').value, use:$('#us').value, useDetail:'', inv:'', desc:$('#ds').value, panels:[]});
-  cur = id; save(); boot();
+  await run(sb.from('projects').insert({name:n, location:$('#l').value, start_date:$('#d').value || null, use:$('#us').value, description:$('#ds').value}),
+    () => { cur = db.inst[db.inst.length-1].id; boot(); });
 }
-function saveProj(){ const i = I(cur); i.use = $('#eu').value; i.useDetail = $('#ed2').value; i.inv = $('#ei').value; i.desc = $('#eds').value; save(); render(); }
-function delProj(){
+const saveProj = () => run(sb.from('projects').update({use:$('#eu').value, use_detail:$('#ed2').value, inverter:$('#ei').value, description:$('#eds').value}).eq('id', cur));
+async function delProj(){
   if (!confirm('¿Eliminar el proyecto y todos sus datos?')) return;
-  db.inst = db.inst.filter(i => i.id != cur); db.gen = db.gen.filter(g => g.inst != cur); db.ev = db.ev.filter(e => e.inst != cur);
-  cur = null; save(); boot();
+  await run(sb.from('projects').delete().eq('id', cur), () => { cur = null; boot(); });
 }
-function addPanel(){
+async function addPanel(){
   const q = +$('#pq').value, w = +$('#pw').value;
   if (!(q > 0 && w > 0)) return alert('Completá cantidad y potencia (Wp).');
-  I(cur).panels.push({brand:$('#pb').value, model:$('#pm').value, qty:q, wp:w, type:$('#pt').value, eff:+$('#pe').value || 0});
-  save(); render();
+  await run(sb.from('panels').insert({project_id:cur, brand:$('#pb').value, model:$('#pm').value, qty:q, wp:w, type:$('#pt').value, eff:+$('#pe').value || 0}));
 }
-function delPanel(n){ I(cur).panels.splice(n,1); save(); render(); }
-function addGen(){
+const delPanel = id => run(sb.from('panels').delete().eq('id', id));
+async function addGen(){
   const d = $('#gd').value;
   if (!cur || !d || $('#gk').value === '') return alert('Falta la fecha o la energía.');
-  db.gen = db.gen.filter(g => !(g.inst == cur && g.date == d));
-  db.gen.push({inst:cur, date:d, kwh:+$('#gk').value, pk:+$('#gp').value || 0, irr:+$('#gi').value || 0});
-  save(); render();
+  await run(sb.from('generation').upsert({project_id:cur, date:d, kwh:+$('#gk').value, pk:+$('#gp').value || 0, irr:+$('#gi').value || 0}, {onConflict:'project_id,date'}));
 }
-function delGen(d){ db.gen = db.gen.filter(g => !(g.inst == cur && g.date == d)); save(); render(); }
-function addEv(){
+const delGen = d => run(sb.from('generation').delete().eq('project_id', cur).eq('date', d));
+async function addEv(){
   const s = $('#edsc').value.trim(); if (!cur || !s) return;
-  db.ev.push({id:db.nid++, inst:cur, date:$('#ed').value, type:$('#et').value, desc:s}); save(); render();
+  await run(sb.from('events').insert({project_id:cur, date:$('#ed').value, type:$('#et').value, description:s}));
 }
-function delEv(id){ db.ev = db.ev.filter(e => e.id != id); save(); render(); }
-function demo(){ if (db.inst.length && !confirm('Se reemplazarán tus datos actuales por los de ejemplo. ¿Continuar?')) return; db = seed(); save(); cur = null; boot(); }
-function wipe(){ if (confirm('¿Borrar todos tus proyectos y datos?')) { db = {inst:[], gen:[], ev:[], nid:1}; save(); cur = null; boot(); } }
+const delEv = id => run(sb.from('events').delete().eq('id', id));
+async function demo(){
+  if (db.inst.length && !confirm('Se agregarán 2 proyectos de ejemplo a tu cuenta. ¿Continuar?')) return;
+  const s = seed();
+  const {data:P, error} = await sb.from('projects').insert(s.inst.map(i => ({name:i.name, location:i.loc, start_date:i.date, use:i.use, use_detail:i.useDetail, inverter:i.inv, description:i.desc}))).select();
+  if (fail(error)) return;
+  const map = {}; s.inst.forEach((i,n) => map[i.id] = P[n].id);
+  const R = await Promise.all([
+    sb.from('panels').insert(s.inst.flatMap(i => i.panels.map(x => ({project_id:map[i.id], brand:x.brand, model:x.model, qty:x.qty, wp:x.wp, type:x.type, eff:x.eff})))),
+    sb.from('generation').insert(s.gen.map(g => ({project_id:map[g.inst], date:g.date, kwh:g.kwh, pk:g.pk, irr:g.irr}))),
+    sb.from('events').insert(s.ev.map(e => ({project_id:map[e.inst], date:e.date, type:e.type, description:e.desc})))
+  ]);
+  if (R.some(r => fail(r.error))) return;
+  cur = null; await loadAll(); boot();
+}
+async function wipe(){
+  if (!confirm('¿Borrar todos tus proyectos y datos?')) return;
+  await run(sb.from('projects').delete().not('id','is',null), () => { cur = null; boot(); });
+}
 function cmpM(){
   const A = $('#ma').value, B = $('#mb').value, R = rows(cur), g = m => R.filter(x => x.date.startsWith(m));
   const a = g(A), b = g(B), s = x => x.reduce((t,y) => t + y.kwh, 0), ta = s(a), tb = s(b), L = Math.max(a.length, b.length), dl = ta ? (tb-ta)/ta*100 : 0;
@@ -268,9 +291,9 @@ function genRep(){
 function render(){
   if (!user) {
     $('#top').hidden = $('#nav').hidden = true;
-    $('#app').innerHTML = `<div class="card auth"><h2>☀️ Ingresá a SolarIA</h2><div class="row"><label>Usuario<input id="u"></label><label>Clave<input id="p" type="password"></label></div>
+    $('#app').innerHTML = `<div class="card auth"><h2>☀️ Ingresá a SolarIA</h2><div class="row"><label>Email<input id="u" type="email"></label><label>Clave<input id="p" type="password"></label></div>
       <div class="row"><button class="pri" onclick="auth(false)">Ingresar</button><button onclick="auth(true)">Crear cuenta</button></div><div class="err" id="err"></div>
-      <p class="mu">Cada usuario tiene sus propios proyectos. Los datos se guardan en este navegador.</p></div>`;
+      <p class="mu">Cada usuario ve solo sus propios proyectos. Los datos se guardan en Supabase.</p></div>`;
     return;
   }
   $('#top').hidden = $('#nav').hidden = false;
@@ -280,10 +303,10 @@ function render(){
 function boot(){
   if (user) {
     if (!I(cur)) cur = db.inst[0]?.id ?? null;
-    $('#who').textContent = '👤 ' + user;
+    $('#who').textContent = '👤 ' + user.email;
     $('#cur').innerHTML = db.inst.map(i => `<option value="${i.id}" ${i.id == cur ? 'selected' : ''}>${esc(i.name)}</option>`).join('') || '<option>(sin proyectos)</option>';
   }
   render();
 }
-$('#cur').onchange = e => { cur = +e.target.value; render(); };
-{ const s = ls.get('solaria_session'); s ? start(s) : boot(); }
+$('#cur').onchange = e => { cur = e.target.value; render(); };
+(async () => { const {data} = await sb.auth.getSession(); data.session ? await start(data.session.user) : boot(); })();
