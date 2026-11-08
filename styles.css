@@ -1,0 +1,32 @@
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1d2330;--mu:#667085;--bd:#e3e6ec;--ac:#e8890c;--c2:#2f7de1;--ok:#1f9d55;--bad:#d64545;--warn:#d9a000}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#14171d;--card:#1d222b;--tx:#e8ebf1;--mu:#9aa3b2;--bd:#2c333f;--ac:#f5a524;--c2:#5b9dff;--ok:#3ec27a;--bad:#ff6b6b;--warn:#f0c040}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{padding:14px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
+header[hidden],nav[hidden]{display:none}
+h1{font-size:20px;margin:0}h1 span{color:var(--ac)}
+h2{font-size:16px;margin:0 0 10px}
+nav{display:flex;gap:6px;overflow-x:auto;padding:0 16px 8px}
+nav button{white-space:nowrap}
+main{padding:0 16px 32px;max-width:980px;margin:auto}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:14px}
+.auth{max-width:360px;margin:40px auto}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.kpi b{display:block;font-size:22px}
+.kpi small,.mu{color:var(--mu)}
+button,input,select,textarea{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:7px 10px}
+button{cursor:pointer}
+button.on,button.pri{background:var(--ac);border-color:var(--ac);color:#111;font-weight:600}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-bottom:8px}
+label{display:flex;flex-direction:column;font-size:12px;color:var(--mu);gap:3px}
+textarea{width:100%;resize:vertical}
+.sc{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--bd);text-align:left;white-space:nowrap}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;color:#fff}
+.alta{background:var(--bad)}.media{background:var(--warn);color:#111}.info{background:var(--c2)}.okc{background:var(--ok)}
+.err{color:var(--bad);min-height:1.2em}
+svg{width:100%;height:auto;display:block}
+svg text{fill:var(--mu);font-size:11px}
+.csv{height:120px;font-family:monospace;font-size:12px}
+@media print{nav,header,.noprint{display:none!important}body{background:#fff;color:#000}}
