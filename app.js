@@ -21,14 +21,28 @@ const pr = (g, k) => g.irr > 0.5 ? g.kwh / (k * g.irr) : null;               // 
 
 /* ---------- Supabase: cuentas y datos ---------- */
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+let pending = null;   // email que está esperando el código de confirmación
 async function auth(reg){
-  const email = $('#u').value.trim(), pass = $('#p').value, e = $('#err');
+  const e = $('#err'), email = $('#u').value.trim(), pass = $('#p').value, name = reg ? $('#nm').value.trim() : '';
   if (!email || pass.length < 6) return e.textContent = 'Ingresá un email y una clave de al menos 6 caracteres.';
-  const {data, error} = reg ? await sb.auth.signUp({email, password:pass}) : await sb.auth.signInWithPassword({email, password:pass});
-  if (error) return e.textContent = error.message;
-  if (!data.session) return e.textContent = 'Cuenta creada. Confirmá tu email y después ingresá.';
+  if (reg && name.length < 3) return e.textContent = 'Ingresá un nombre de usuario (mínimo 3 caracteres).';
+  const {data, error} = reg
+    ? await sb.auth.signUp({email, password:pass, options:{data:{username:name}}})   // el nombre queda guardado en el usuario
+    : await sb.auth.signInWithPassword({email, password:pass});
+  if (error) {
+    if (/not confirmed/i.test(error.message)) { await sb.auth.resend({type:'signup', email}); pending = email; return render(); }
+    return e.textContent = error.message;
+  }
+  if (!data.session) { pending = email; return render(); }   // falta confirmar con el código del mail
   await start(data.session.user);
 }
+async function verify(){
+  const {data, error} = await sb.auth.verifyOtp({email:pending, token:$('#cd').value.trim(), type:'signup'});
+  if (error) return $('#err').textContent = 'Código incorrecto o vencido.';
+  pending = null; await start(data.session.user);
+}
+async function resend(){ await sb.auth.resend({type:'signup', email:pending}); $('#err').textContent = 'Te enviamos un código nuevo.'; }
+function cancelVerify(){ pending = null; render(); }
 async function start(u){ user = u; await loadAll(); boot(); }
 async function logout(){ await sb.auth.signOut(); user = db = cur = null; boot(); }
 function fail(error){ if (error) { alert('Error de base de datos: ' + error.message); return true; } return false; }
@@ -291,7 +305,11 @@ function genRep(){
 function render(){
   if (!user) {
     $('#top').hidden = $('#nav').hidden = true;
-    $('#app').innerHTML = `<div class="card auth"><h2>☀️ Ingresá a SolarIA</h2><div class="row"><label>Email<input id="u" type="email"></label><label>Clave<input id="p" type="password"></label></div>
+    if (pending) {
+      $('#app').innerHTML = `<div class="card auth"><h2>Confirmá tu email</h2><p>Te enviamos un código a <b>${esc(pending)}</b>.</p><div class="row"><label>Código<input id="cd" inputmode="numeric" autocomplete="one-time-code"></label><button class="pri" onclick="verify()">Confirmar</button></div><div class="row"><button onclick="resend()">Reenviar código</button><button onclick="cancelVerify()">Volver</button></div><div class="err" id="err"></div></div>`;
+      return;
+    }
+    $('#app').innerHTML = `<div class="card auth"><h2>☀️ Ingresá a SolarIA</h2><div class="row"><label>Usuario (solo para crear cuenta)<input id="nm"></label><label>Email<input id="u" type="email"></label><label>Clave<input id="p" type="password"></label></div>
       <div class="row"><button class="pri" onclick="auth(false)">Ingresar</button><button onclick="auth(true)">Crear cuenta</button></div><div class="err" id="err"></div>
       <p class="mu">Cada usuario ve solo sus propios proyectos. Los datos se guardan en Supabase.</p></div>`;
     return;
@@ -303,7 +321,7 @@ function render(){
 function boot(){
   if (user) {
     if (!I(cur)) cur = db.inst[0]?.id ?? null;
-    $('#who').textContent = '👤 ' + user.email;
+    $('#who').textContent = '👤 ' + (user.user_metadata?.username || user.email);
     $('#cur').innerHTML = db.inst.map(i => `<option value="${i.id}" ${i.id == cur ? 'selected' : ''}>${esc(i.name)}</option>`).join('') || '<option>(sin proyectos)</option>';
   }
   render();
