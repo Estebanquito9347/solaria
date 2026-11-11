@@ -13,3 +13,5 @@ Para habilitar cuentas y almacenamiento en la nube, ejecutá `schema.sql` en el 
 ## Análisis
 
 El análisis es heurístico, no un modelo predictivo: calcula el Performance Ratio con potencia instalada e irradiancia, y señala generación nula con sol, desvíos robustos y caídas sostenidas. Las recomendaciones orientan inspecciones y no reemplazan una evaluación técnica.
+
+En la carga diaria se puede consultar irradiancia de Open-Meteo por ubicación y fecha. El servicio devuelve radiación diaria en MJ/m²; la aplicación la convierte a kWh/m². Son estimaciones de una grilla meteorológica, no mediciones del inversor ni de una estación local; requieren conexión a internet y el pronóstico cubre hasta 7 días adelante.

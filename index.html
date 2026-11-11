@@ -4,19 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SolarIA – Monitoreo inteligente de instalaciones solares</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header id="top" hidden>
-    <h1>☀️ Solar<span>IA</span></h1>
-    <div class="row">
-      <label>Proyecto activo<select id="cur"></select></label>
+  <header id="top" class="topbar" hidden>
+    <h1><span class="brand-mark" aria-hidden="true">☼</span>Solar<span>IA</span></h1>
+    <div class="top-controls">
+      <label>Instalación activa<select id="cur" aria-label="Instalación activa"></select></label>
       <span id="who" class="mu"></span>
-      <button onclick="logout()">Salir</button>
+      <button onclick="logout()">Cerrar sesión</button>
     </div>
   </header>
-  <nav id="nav" hidden></nav>
-  <main id="app"></main>
+  <nav id="nav" aria-label="Navegación principal" hidden></nav>
+  <main id="app" aria-live="polite"></main>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
   <script src="config.js"></script>
   <script src="app.js"></script>

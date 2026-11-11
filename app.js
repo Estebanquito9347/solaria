@@ -180,18 +180,39 @@ function fichaProyecto(i){
 const V = {
   panel(){
     const ins = I(cur);
-    if (!ins) return '<div class="card">Todavía no tenés proyectos. Andá a <b>Proyectos</b> para crear uno (o cargá datos de ejemplo en <b>Generación</b>).</div>';
-    const R = rows(cur), l30 = R.slice(-30), tot = l30.reduce((s,g) => s+g.kwh, 0), a = analyze(cur);
-    const an = a.F.filter(f => f.s != 'info'), dates = new Set(an.map(f => f.d));
-    return `<div class="card"><b>${esc(ins.name)}</b> <span class="mu">· ${esc(ins.loc)} · Alimenta: ${esc(ins.use)}</span></div>
-    <div class="grid"><div class="card kpi"><small>Potencia instalada</small><b>${f1(kwp(ins))} kWp</b></div>
-    <div class="card kpi"><small>Energía últimos 30 días</small><b>${f1(tot)} kWh</b></div>
-    <div class="card kpi"><small>Promedio diario</small><b>${f1(tot/(l30.length||1))} kWh</b></div>
-    <div class="card kpi"><small>PR típico</small><b>${a.pr ? f1(a.pr*100)+'%' : '–'}</b></div>
-    <div class="card kpi"><small>Alertas detectadas</small><b>${an.length}</b></div>
-    <div class="card kpi"><small>Salud estimada</small><b>${a.health ?? '–'}/100</b></div></div>
-    <div class="card"><h2>Energía diaria (kWh) – últimos 30 días</h2>${chart(l30.map(g => g.date.slice(5)), [{n:'kWh', v:l30.map(g => g.kwh)}], 1, l30.map(g => dates.has(g.date)))}<small class="mu">Barras rojas: días anómalos según el análisis IA.</small></div>
-    <div class="card"><h2>Potencia pico diaria (kW)</h2>${chart(l30.map(g => g.date.slice(5)), [{n:'kW', v:l30.map(g => g.pk)}])}</div>`;
+    if (!ins) return `<section class="empty-state"><span class="eyebrow">SOLARIA · MONITOREO SOLAR</span><h2>Empezá por registrar una instalación</h2><p>Sumá la potencia de los paneles y cargá la producción diaria para empezar a ver tendencias, alertas y reportes.</p><button class="pri" onclick="tab='proy';render()">＋ Crear instalación</button><button onclick="demo()">Cargar instalaciones de ejemplo</button></section>`;
+    const R = rows(cur), today = new Date(), cutoff = iso(new Date(today.getTime()-29*864e5)), prevCutoff = iso(new Date(today.getTime()-59*864e5));
+    const l30 = R.filter(g => g.date >= cutoff), prev30 = R.filter(g => g.date >= prevCutoff && g.date < cutoff);
+    const total = list => list.reduce((sum,g) => sum+g.kwh, 0), energy = total(l30), previous = total(prev30);
+    const trend = previous ? (energy-previous)/previous*100 : null, a = analyze(cur);
+    const alerts = a.F.filter(f => f.s != 'info' && f.d >= cutoff), dates = new Set(alerts.map(f => f.d));
+    const latest = R.at(-1), average = energy/(l30.length||1), maxPower = Math.max(0,...l30.map(g => g.pk));
+    const events = db.ev.filter(e => e.inst == cur).sort((x,y) => x.date < y.date ? 1 : -1).slice(0,3);
+    const months = Array.from({length:6}, (_,idx) => {
+      const monthDate = new Date(today.getFullYear(),today.getMonth()-5+idx,1), key = iso(monthDate).slice(0,7);
+      return {key, label:monthDate.toLocaleDateString('es-AR',{month:'short'}), kwh: R.filter(g => g.date.startsWith(key)).reduce((sum,g) => sum+g.kwh,0)};
+    });
+    const health = a.health == null ? null : a.health, status = alerts.some(f => f.s == 'alta') ? 'Requiere revisión' : alerts.length ? 'Atención recomendada' : latest ? 'Operación estable' : 'Sin registros';
+    return `<section class="dashboard-head"><div><span class="eyebrow">CENTRO DE MONITOREO · ${esc(ins.loc || 'UBICACIÓN SIN DEFINIR').toUpperCase()}</span><h2>${esc(ins.name)}</h2><p>${esc(ins.use)} · ${f1(kwp(ins))} kWp instalados · ${nPan(ins)} paneles</p></div>
+      <div class="head-actions"><button class="pri" onclick="tab='gen';render()">＋ Cargar producción</button><button onclick="tab='ev';render()">＋ Registrar evento</button></div></section>
+    <section class="status-strip"><span class="status-light ${alerts.some(f => f.s == 'alta') ? 'status-bad' : alerts.length ? 'status-warn' : ''}"></span><b>${status}</b><span class="status-divider"></span><span>${latest ? `Último dato: ${latest.date}` : 'Esperando el primer registro de generación'}</span><button class="text-action" onclick="tab='ia';render()">Ver análisis →</button></section>
+    <section class="kpi-grid">
+      <article class="metric metric-primary"><span>Energía · últimos 30 días</span><strong>${f1(energy)} <small>kWh</small></strong><div class="metric-foot">${trend == null ? 'Sin período previo para comparar' : `<span class="${trend >= 0 ? 'trend-up' : 'trend-down'}">${trend >= 0 ? '↑' : '↓'} ${f1(Math.abs(trend))}%</span> vs. 30 días anteriores`}</div></article>
+      <article class="metric"><span>Promedio diario</span><strong>${l30.length ? f1(average) : '–'} <small>kWh</small></strong><div class="metric-foot">${l30.length} días registrados en el período</div></article>
+      <article class="metric"><span>Potencia pico</span><strong>${l30.length ? f1(maxPower) : '–'} <small>kW</small></strong><div class="metric-foot">Máximo del período seleccionado</div></article>
+      <article class="metric"><span>Performance Ratio típico</span><strong>${a.pr == null ? '–' : f1(a.pr*100)} <small>${a.pr == null ? '' : '%'}</small></strong><div class="metric-foot">${a.pr == null ? 'Se necesitan datos de irradiancia' : 'Mediana según irradiancia registrada'}</div></article>
+    </section>
+    <section class="dashboard-grid"><article class="surface production-surface"><div class="surface-heading"><div><span class="eyebrow">PRODUCCIÓN</span><h3>Energía diaria</h3></div><span class="unit-label">kWh · 30 días calendario</span></div>
+      ${chart(l30.map(g => g.date.slice(5)), [{n:'kWh',v:l30.map(g => g.kwh)}], 1, l30.map(g => dates.has(g.date)))}<div class="chart-legend"><span class="legend-dot"></span>Producción diaria<span class="legend-dot legend-alert"></span>Día con anomalía</div></article>
+      <article class="surface health-surface"><div class="surface-heading"><div><span class="eyebrow">DIAGNÓSTICO</span><h3>Estado del sistema</h3></div><button class="text-action" onclick="tab='ia';render()">Detalles →</button></div>
+        <div class="health-score ${health != null && health < 70 ? 'health-low' : ''}"><strong>${health == null ? '–' : health}</strong><span>/100</span><div class="health-meter"><i style="width:${health ?? 0}%"></i></div></div>
+        <p class="health-caption">Índice estimado a partir de anomalías de producción; no reemplaza una inspección técnica.</p>
+        <div class="alert-summary"><b>${alerts.length}</b><span>${alerts.length == 1 ? 'alerta en los últimos 30 días' : 'alertas en los últimos 30 días'}</span></div>
+        ${alerts.length ? `<ul class="alert-list">${alerts.slice(0,2).map(f => `<li><span class="tag ${f.s}">${f.s == 'alta' ? 'Alta' : 'Media'}</span><span>${esc(f.t)}</span></li>`).join('')}</ul>` : '<p class="clear-note">Sin anomalías recientes detectadas.</p>'}</article></section>
+    <section class="dashboard-grid lower-grid"><article class="surface"><div class="surface-heading"><div><span class="eyebrow">TENDENCIA</span><h3>Producción por mes</h3></div><button class="text-action" onclick="tab='cmp';render()">Comparar períodos →</button></div>
+      ${chart(months.map(m => m.label), [{n:'kWh',v:months.map(m => m.kwh)}], 1)}</article>
+      <article class="surface event-surface"><div class="surface-heading"><div><span class="eyebrow">BITÁCORA</span><h3>Fallas y mantenimiento</h3></div><button class="text-action" onclick="tab='ev';render()">Ver todo →</button></div>
+        ${events.length ? `<ul class="event-list">${events.map(e => `<li><span class="event-mark ${e.type == 'Falla' ? 'event-failure' : ''}">${e.type == 'Falla' ? '!' : '✓'}</span><div><b>${esc(e.type)}</b><p>${esc(e.desc)}</p><small>${e.date}</small></div></li>`).join('')}</ul>` : '<p class="clear-note">Todavía no hay eventos registrados.</p>'}</article></section>`;
   },
   proy(){
     return `<div class="card"><h2>Nuevo proyecto / sector de paneles</h2>
@@ -208,8 +229,8 @@ const V = {
     const R = rows(cur).slice(-15).reverse();
     return `<div class="card"><h2>Cargar datos de generación</h2>
       <div class="row"><label>Fecha<input id="gd" type="date" value="${iso(new Date())}"></label><label>Energía (kWh)<input id="gk" type="number" step="0.01" min="0"></label>
-      <label>Potencia pico (kW)<input id="gp" type="number" step="0.01" min="0"></label><label>Irradiancia (kWh/m²)<input id="gi" type="number" step="0.01" min="0"></label><button class="pri" onclick="addGen()">Guardar</button></div>
-      <p class="mu">La irradiancia sale de una estación meteorológica o de servicios abiertos (Open-Meteo, NASA POWER). Sin ella no se puede calcular el rendimiento (PR).</p>
+      <label>Potencia pico (kW)<input id="gp" type="number" step="0.01" min="0"></label><label>Irradiancia (kWh/m²)<input id="gi" type="number" step="0.01" min="0"></label><button id="weatherBtn" onclick="importIrradiance()">Obtener irradiancia</button><button class="pri" onclick="addGen()">Guardar registro</button></div>
+      <p id="weatherStatus" class="weather-status" aria-live="polite">La irradiancia se obtiene de Open-Meteo según la ubicación de la instalación; también podés ingresarla manualmente.</p>
       <div class="row"><button onclick="demo()">Cargar datos de ejemplo</button><button onclick="wipe()">Borrar todos mis datos</button></div></div>
     <div class="card sc"><h2>Últimos registros</h2><table><tr><th>Fecha</th><th>kWh</th><th>kW pico</th><th>Irrad.</th><th></th></tr>
     ${R.map(g => `<tr><td>${g.date}</td><td>${g.kwh}</td><td>${g.pk}</td><td>${g.irr}</td><td><button onclick="delGen('${g.date}')">✕</button></td></tr>`).join('')}</table></div>`;
@@ -270,6 +291,34 @@ async function addGen(){
   await run(sb.from('generation').upsert({project_id:cur, date:d, kwh:g.kwh, pk:g.pk, irr:g.irr}, {onConflict:'project_id,date'}), render,
     () => { const old = db.gen.findIndex(x => x.inst == cur && x.date == d); if (old < 0) db.gen.push(g); else db.gen[old] = g; });
 }
+async function importIrradiance(){
+  const ins = I(cur), date = $('#gd').value, status = $('#weatherStatus'), button = $('#weatherBtn');
+  if (!ins?.loc || !date) { status.textContent = 'Completá la ubicación de la instalación y la fecha.'; return; }
+  button.disabled = true; status.textContent = 'Buscando ubicación y datos meteorológicos…';
+  try {
+    const geoUrl = new URL('https://geocoding-api.open-meteo.com/v1/search');
+    geoUrl.search = new URLSearchParams({name:ins.loc, count:'10', language:'es', format:'json', countryCode:'AR'});
+    const geoResponse = await fetch(geoUrl), geo = await geoResponse.json();
+    if (!geoResponse.ok || geo.error || !geo.results?.length) throw new Error('No encontramos esa localidad. Revisá la ubicación en la ficha de la instalación.');
+    const location = geo.results[0], target = new Date(`${date}T00:00:00Z`), now = new Date();
+    const dayOffset = Math.round((target.getTime()-Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()))/864e5);
+    if (dayOffset > 7) throw new Error('El pronóstico está disponible hasta 7 días adelante.');
+    const recent = dayOffset >= -7;
+    const weatherUrl = new URL(recent ? 'https://api.open-meteo.com/v1/forecast' : 'https://archive-api.open-meteo.com/v1/archive');
+    const params = {latitude:String(location.latitude), longitude:String(location.longitude), daily:'shortwave_radiation_sum', timezone:'auto'};
+    if (recent) { params.past_days = '7'; params.forecast_days = '7'; }
+    else { params.start_date = date; params.end_date = date; }
+    weatherUrl.search = new URLSearchParams(params);
+    const weatherResponse = await fetch(weatherUrl), weather = await weatherResponse.json();
+    if (!weatherResponse.ok || weather.error) throw new Error(weather.reason || 'El servicio meteorológico no respondió correctamente.');
+    const index = weather.daily?.time?.indexOf(date) ?? -1, radiation = weather.daily?.shortwave_radiation_sum?.[index];
+    if (index < 0 || radiation == null) throw new Error('No hay irradiancia disponible para esa fecha. Podés cargarla manualmente.');
+    $('#gi').value = (radiation/3.6).toFixed(2);
+    status.textContent = `Irradiancia estimada: ${$('#gi').value} kWh/m² · ${location.name}, ${location.admin1 || location.country} · Open-Meteo (${recent ? 'pronóstico' : 'histórico'})`;
+  } catch (error) {
+    status.textContent = `${error.message || 'No se pudo consultar la irradiancia.'} Podés cargarla manualmente.`;
+  } finally { button.disabled = false; }
+}
 const delGen = d => run(sb.from('generation').delete().eq('project_id', cur).eq('date', d), render, () => { db.gen = db.gen.filter(g => !(g.inst == cur && g.date == d)); });
 async function addEv(){
   const s = $('#edsc').value.trim(); if (!cur || !s) return;
@@ -307,9 +356,12 @@ async function wipe(){
 }
 function cmpM(){
   const A = $('#ma').value, B = $('#mb').value, R = rows(cur), g = m => R.filter(x => x.date.startsWith(m));
-  const a = g(A), b = g(B), s = x => x.reduce((t,y) => t + y.kwh, 0), ta = s(a), tb = s(b), L = Math.max(a.length, b.length), dl = ta ? (tb-ta)/ta*100 : 0;
-  $('#rm').innerHTML = `<p>${A}: <b>${f1(ta)} kWh</b> (prom. ${f1(ta/(a.length||1))}/día) · ${B}: <b>${f1(tb)} kWh</b> (prom. ${f1(tb/(b.length||1))}/día) · Diferencia: <b>${dl > 0 ? '+' : ''}${f1(dl)}%</b></p>`
-    + chart(Array.from({length:L}, (_,i) => i+1), [{n:A, v:a.map(x => x.kwh)}, {n:B, v:b.map(x => x.kwh)}]);
+  const a = g(A), b = g(B), s = x => x.reduce((t,y) => t + y.kwh, 0), ta = s(a), tb = s(b);
+  const daysInMonth = m => { const [y,mo] = m.split('-').map(Number); return new Date(y,mo,0).getDate(); };
+  const L = Math.max(daysInMonth(A), daysInMonth(B)), series = m => Array.from({length:L}, (_,i) => R.find(x => x.date.startsWith(m) && Number(x.date.slice(8)) == i+1)?.kwh ?? null);
+  const dl = ta ? (tb-ta)/ta*100 : null;
+  $('#rm').innerHTML = `<p>${A}: <b>${f1(ta)} kWh</b> (prom. ${f1(ta/(a.length||1))}/día) · ${B}: <b>${f1(tb)} kWh</b> (prom. ${f1(tb/(b.length||1))}/día) · Diferencia: <b>${dl == null ? 'sin base' : `${dl > 0 ? '+' : ''}${f1(dl)}%`}</b></p>`
+    + chart(Array.from({length:L}, (_,i) => i+1), [{n:A, v:series(A)}, {n:B, v:series(B)}]);
 }
 function cmpD(){
   const R = rows(cur), a = R.find(x => x.date == $('#da').value), b = R.find(x => x.date == $('#db2').value);
