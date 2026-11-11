@@ -1,7 +1,7 @@
 /* SolarIA – lógica de la aplicación (sin librerías externas) */
 const TABS = [['panel','Panel'],['proy','Proyectos'],['gen','Generación'],['cmp','Comparar'],['ev','Fallas y mant.'],['ia','Análisis IA'],['rep','Reportes']];
 const USES = ['Vivienda','Industria / taller','Bombeo / riego','Comercio','Alumbrado','Otro'];
-let tab = 'panel', cur = null, user = null, db = null;
+let tab = 'panel', cur = null, user = null, db = null, localMode = false;
 
 /* ---------- utilidades ---------- */
 const $ = s => document.querySelector(s);
@@ -20,9 +20,11 @@ const nPan = p => p.panels.reduce((s,x) => s + x.qty, 0);
 const pr = (g, k) => g.irr > 0.5 ? g.kwh / (k * g.irr) : null;               // Performance Ratio
 
 /* ---------- Supabase: cuentas y datos ---------- */
-const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const noopQuery = new Proxy({}, {get: () => (...args) => noopQuery});
+const sb = window.supabase?.createClient(SUPABASE_URL, SUPABASE_KEY) || {from: () => noopQuery};
 let pending = null;   // email que está esperando el código de confirmación
 async function auth(reg){
+  if (!sb.auth) return $('#err').textContent = 'La conexión con Supabase no está disponible. Podés usar el modo de demostración.';
   const e = $('#err'), email = $('#u').value.trim(), pass = $('#p').value, name = reg ? $('#nm').value.trim() : '';
   if (!email || pass.length < 6) return e.textContent = 'Ingresá un email y una clave de al menos 6 caracteres.';
   if (reg && name.length < 3) return e.textContent = 'Ingresá un nombre de usuario (mínimo 3 caracteres).';
@@ -43,11 +45,21 @@ async function verify(){
 }
 async function resend(){ await sb.auth.resend({type:'signup', email:pending}); $('#err').textContent = 'Te enviamos un código nuevo.'; }
 function cancelVerify(){ pending = null; render(); }
-async function start(u){ user = u; await loadAll(); boot(); }
-async function logout(){ await sb.auth.signOut(); user = db = cur = null; boot(); }
+async function start(u){ localMode = false; user = u; await loadAll(); boot(); }
+function startDemo(){
+  localMode = true; user = {email:'Demostración local'};
+  db = ls.get('solaria-demo-data') || seed(); cur = db.inst[0]?.id ?? null;
+  db.inst.forEach(i => i.panels.forEach(p => { if (!p.id) p.id = db.nid++; }));
+  saveLocal(); boot();
+}
+async function logout(){ if (!localMode && sb.auth) await sb.auth.signOut(); user = db = cur = null; localMode = false; boot(); }
+function saveLocal(){ if (localMode) ls.set('solaria-demo-data', db); }
 function fail(error){ if (error) { alert('Error de base de datos: ' + error.message); return true; } return false; }
 // Ejecuta una consulta, recarga los datos y vuelve a dibujar
-async function run(q, after = render){ const {error} = await q; if (fail(error)) return; await loadAll(); after(); }
+async function run(q, after = render, local = null){
+  if (localMode) { local?.(); saveLocal(); after(); return; }
+  const {error} = await q; if (fail(error)) return; await loadAll(); after();
+}
 // Descarga las 4 tablas (RLS hace que solo lleguen las filas del usuario) y arma el objeto db
 async function loadAll(){
   const T = ['projects','panels','generation','events'];
@@ -66,7 +78,8 @@ async function loadAll(){
 /* ---------- datos de ejemplo (simulados) ---------- */
 function seed(){
   let s = 7; const r = () => (s = s*16807 % 2147483647) / 2147483647, t = new Date();
-  const pan = (brand, model, qty, wp, type, eff) => ({brand, model, qty, wp, type, eff});
+  let panelId = 1;
+  const pan = (brand, model, qty, wp, type, eff) => ({id:panelId++, brand, model, qty, wp, type, eff});
   const inst = [
     {id:1, name:'Casa Arroyito', loc:'Arroyito, Córdoba', date:'2024-03-10', use:'Vivienda', useDetail:'Heladera, aire acondicionado, iluminación', inv:'Inversor on-grid 5 kW', desc:'Sistema residencial conectado a red para reducir el consumo del hogar.', panels:[pan('Jinko','Tiger Neo 450',12,450,'Monocristalino',22.5)]},
     {id:2, name:'Taller Industrial', loc:'San Francisco, Córdoba', date:'2023-09-01', use:'Industria / taller', useDetail:'Máquinas herramienta y compresor', inv:'Inversor trifásico 10 kW', desc:'Sector de cubierta del taller que cubre el consumo diurno.', panels:[pan('Canadian Solar','HiKu6 500',20,500,'Monocristalino',21.0)]}
@@ -232,33 +245,51 @@ const V = {
 async function addProj(){
   const n = $('#n').value.trim(); if (!n) return alert('Ingresá un nombre para el proyecto.');
   await run(sb.from('projects').insert({name:n, location:$('#l').value, start_date:$('#d').value || null, use:$('#us').value, description:$('#ds').value}),
-    () => { cur = db.inst[db.inst.length-1].id; boot(); });
+    () => { cur = db.inst[db.inst.length-1].id; boot(); },
+    () => db.inst.push({id:db.nid++, name:n, loc:$('#l').value, date:$('#d').value, use:$('#us').value, useDetail:'', inv:'', desc:$('#ds').value, panels:[]}));
 }
-const saveProj = () => run(sb.from('projects').update({use:$('#eu').value, use_detail:$('#ed2').value, inverter:$('#ei').value, description:$('#eds').value}).eq('id', cur));
+const saveProj = () => run(sb.from('projects').update({use:$('#eu').value, use_detail:$('#ed2').value, inverter:$('#ei').value, description:$('#eds').value}).eq('id', cur), render,
+  () => Object.assign(I(cur), {use:$('#eu').value, useDetail:$('#ed2').value, inv:$('#ei').value, desc:$('#eds').value}));
 async function delProj(){
   if (!confirm('¿Eliminar el proyecto y todos sus datos?')) return;
-  await run(sb.from('projects').delete().eq('id', cur), () => { cur = null; boot(); });
+  await run(sb.from('projects').delete().eq('id', cur), () => { cur = null; boot(); }, () => {
+    db.inst = db.inst.filter(i => i.id != cur); db.gen = db.gen.filter(g => g.inst != cur); db.ev = db.ev.filter(e => e.inst != cur);
+  });
 }
 async function addPanel(){
   const q = +$('#pq').value, w = +$('#pw').value;
   if (!(q > 0 && w > 0)) return alert('Completá cantidad y potencia (Wp).');
-  await run(sb.from('panels').insert({project_id:cur, brand:$('#pb').value, model:$('#pm').value, qty:q, wp:w, type:$('#pt').value, eff:+$('#pe').value || 0}));
+  await run(sb.from('panels').insert({project_id:cur, brand:$('#pb').value, model:$('#pm').value, qty:q, wp:w, type:$('#pt').value, eff:+$('#pe').value || 0}), render,
+    () => I(cur).panels.push({id:db.nid++, brand:$('#pb').value, model:$('#pm').value, qty:q, wp:w, type:$('#pt').value, eff:+$('#pe').value || 0}));
 }
-const delPanel = id => run(sb.from('panels').delete().eq('id', id));
+const delPanel = id => run(sb.from('panels').delete().eq('id', id), render, () => { I(cur).panels = I(cur).panels.filter(p => p.id != id); });
 async function addGen(){
   const d = $('#gd').value;
   if (!cur || !d || $('#gk').value === '') return alert('Falta la fecha o la energía.');
-  await run(sb.from('generation').upsert({project_id:cur, date:d, kwh:+$('#gk').value, pk:+$('#gp').value || 0, irr:+$('#gi').value || 0}, {onConflict:'project_id,date'}));
+  const g = {inst:cur, date:d, kwh:+$('#gk').value, pk:+$('#gp').value || 0, irr:+$('#gi').value || 0};
+  await run(sb.from('generation').upsert({project_id:cur, date:d, kwh:g.kwh, pk:g.pk, irr:g.irr}, {onConflict:'project_id,date'}), render,
+    () => { const old = db.gen.findIndex(x => x.inst == cur && x.date == d); if (old < 0) db.gen.push(g); else db.gen[old] = g; });
 }
-const delGen = d => run(sb.from('generation').delete().eq('project_id', cur).eq('date', d));
+const delGen = d => run(sb.from('generation').delete().eq('project_id', cur).eq('date', d), render, () => { db.gen = db.gen.filter(g => !(g.inst == cur && g.date == d)); });
 async function addEv(){
   const s = $('#edsc').value.trim(); if (!cur || !s) return;
-  await run(sb.from('events').insert({project_id:cur, date:$('#ed').value, type:$('#et').value, description:s}));
+  await run(sb.from('events').insert({project_id:cur, date:$('#ed').value, type:$('#et').value, description:s}), render,
+    () => db.ev.push({id:db.nid++, inst:cur, date:$('#ed').value, type:$('#et').value, desc:s}));
 }
-const delEv = id => run(sb.from('events').delete().eq('id', id));
+const delEv = id => run(sb.from('events').delete().eq('id', id), render, () => { db.ev = db.ev.filter(e => e.id != id); });
 async function demo(){
   if (db.inst.length && !confirm('Se agregarán 2 proyectos de ejemplo a tu cuenta. ¿Continuar?')) return;
   const s = seed();
+  if (localMode) {
+    const map = {};
+    s.inst.forEach(i => {
+      map[i.id] = db.nid++;
+      db.inst.push({...i, id:map[i.id], panels:i.panels.map(p => ({...p, id:db.nid++}))});
+    });
+    db.gen.push(...s.gen.map(g => ({...g, inst:map[g.inst]})));
+    db.ev.push(...s.ev.map(e => ({...e, id:db.nid++, inst:map[e.inst]})));
+    cur = map[s.inst[0].id]; saveLocal(); boot(); return;
+  }
   const {data:P, error} = await sb.from('projects').insert(s.inst.map(i => ({name:i.name, location:i.loc, start_date:i.date, use:i.use, use_detail:i.useDetail, inverter:i.inv, description:i.desc}))).select();
   if (fail(error)) return;
   const map = {}; s.inst.forEach((i,n) => map[i.id] = P[n].id);
@@ -272,7 +303,7 @@ async function demo(){
 }
 async function wipe(){
   if (!confirm('¿Borrar todos tus proyectos y datos?')) return;
-  await run(sb.from('projects').delete().not('id','is',null), () => { cur = null; boot(); });
+  await run(sb.from('projects').delete().not('id','is',null), () => { cur = null; boot(); }, () => { db = {inst:[], gen:[], ev:[], nid:1}; });
 }
 function cmpM(){
   const A = $('#ma').value, B = $('#mb').value, R = rows(cur), g = m => R.filter(x => x.date.startsWith(m));
@@ -310,7 +341,7 @@ function render(){
       return;
     }
     $('#app').innerHTML = `<div class="card auth"><h2>☀️ Ingresá a SolarIA</h2><div class="row"><label>Usuario (solo para crear cuenta)<input id="nm"></label><label>Email<input id="u" type="email"></label><label>Clave<input id="p" type="password"></label></div>
-      <div class="row"><button class="pri" onclick="auth(false)">Ingresar</button><button onclick="auth(true)">Crear cuenta</button></div><div class="err" id="err"></div>
+      <div class="row"><button class="pri" onclick="auth(false)">Ingresar</button><button onclick="auth(true)">Crear cuenta</button><button onclick="startDemo()">Probar con datos de ejemplo</button></div><div class="err" id="err"></div>
       <p class="mu">Cada usuario ve solo sus propios proyectos. Los datos se guardan en Supabase.</p></div>`;
     return;
   }
@@ -327,4 +358,4 @@ function boot(){
   render();
 }
 $('#cur').onchange = e => { cur = e.target.value; render(); };
-(async () => { const {data} = await sb.auth.getSession(); data.session ? await start(data.session.user) : boot(); })();
+(async () => { if (!sb.auth) return boot(); const {data} = await sb.auth.getSession(); data.session ? await start(data.session.user) : boot(); })();
