@@ -98,7 +98,7 @@ function seed(){
 }
 
 /* ---------- gráficos SVG ---------- */
-function chart(labels, series, bar, flags){
+function chartSVG(labels, series, bar, flags){
   const W = 700, H = 220, p = 36, n = labels.length;
   if (!n) return '<p class="mu">Sin datos.</p>';
   const mx = Math.max(1, ...series.flatMap(s => s.v.filter(x => x != null))) * 1.1;
@@ -119,6 +119,33 @@ function chart(labels, series, bar, flags){
   });
   if (series.length > 1) series.forEach((s,i) => o += `<text x="${p+8+i*120}" y="12" style="fill:${i ? 'var(--c2)' : 'var(--ac)'}">● ${esc(s.n)}</text>`);
   return o + '</svg>';
+}
+
+/* ---------- gráficos con Chart.js (si no carga, se usa el SVG propio) ---------- */
+const CQ = {}; let CH = [], cid = 0;
+function chart(labels, series, bar, flags){
+  if (!window.Chart) return chartSVG(labels, series, bar, flags);
+  if (!labels.length) return '<p class="mu">Sin datos.</p>';
+  const id = 'c' + (++cid); CQ[id] = {labels, series, bar, flags};
+  return `<div class="cv"><canvas id="${id}"></canvas></div>`;
+}
+function drawCharts(){
+  if (!window.Chart) return;
+  CH = CH.filter(c => c.canvas.isConnected ? true : (c.destroy(), false));          // libera los gráficos que ya no están en pantalla
+  const cs = getComputedStyle(document.documentElement), v = n => cs.getPropertyValue(n).trim();
+  const cols = [v('--ac'), v('--c2')], tx = v('--tx'), mu = v('--mu'), bd = v('--bd'), bad = v('--bad');
+  document.querySelectorAll('canvas[id^="c"]').forEach(cv => {
+    const q = CQ[cv.id]; if (!q || Chart.getChart(cv)) return;
+    CH.push(new Chart(cv, {
+      type: q.bar ? 'bar' : 'line',
+      data: {labels:q.labels, datasets:q.series.map((s,i) => ({label:s.n, data:s.v, borderColor:cols[i % 2], borderWidth:2, pointRadius:0, pointHoverRadius:4, tension:.25, spanGaps:true, borderRadius:3,
+        backgroundColor: q.bar ? s.v.map((_,k) => q.flags && q.flags[k] ? bad : cols[i % 2]) : cols[i % 2]}))},
+      options: {responsive:true, maintainAspectRatio:false, interaction:{mode:'index', intersect:false},
+        plugins:{legend:{display:q.series.length > 1, labels:{color:tx}}},
+        scales:{x:{ticks:{color:mu, maxTicksLimit:8}, grid:{display:false}}, y:{beginAtZero:true, ticks:{color:mu}, grid:{color:bd}}}}
+    }));
+  });
+  Object.keys(CQ).forEach(k => { if (!document.getElementById(k)) delete CQ[k]; });
 }
 
 /* ---------- IA nivel 2: modelo de producción esperada (regresión robusta) ---------- */
@@ -227,8 +254,9 @@ const V = {
     const R = rows(cur).slice(-15).reverse();
     return `<div class="card"><h2>Cargar datos de generación</h2>
       <div class="row"><label>Fecha<input id="gd" type="date" value="${iso(new Date())}"></label><label>Energía (kWh)<input id="gk" type="number" step="0.01" min="0"></label>
-      <label>Potencia pico (kW)<input id="gp" type="number" step="0.01" min="0"></label><label>Irradiancia (kWh/m²)<input id="gi" type="number" step="0.01" min="0"></label><button class="pri" onclick="addGen()">Guardar</button></div>
-      <p class="mu">La irradiancia sale de una estación meteorológica o de servicios abiertos (Open-Meteo, NASA POWER). Sin ella no se puede calcular el rendimiento (PR).</p>
+      <label>Potencia pico (kW)<input id="gp" type="number" step="0.01" min="0"></label><label>Irradiancia kWh/m² (vacío = automática)<input id="gi" type="number" step="0.01" min="0"></label><button class="pri" onclick="addGen()">Guardar</button></div>
+      <p class="mu">Si dejás la irradiancia vacía, SolarIA la obtiene sola de Open-Meteo según la ubicación del proyecto (${esc(I(cur) ? I(cur).loc || 'sin ubicación' : '')}). Sin irradiancia no se puede modelar el rendimiento.</p>
+      <div class="row"><button onclick="fillIrr()">☀️ Completar irradiancia faltante (${rows(cur).filter(g => !(g.irr > 0)).length} días)</button></div>
       <div class="row"><button onclick="demo()">Cargar datos de ejemplo</button><button onclick="wipe()">Borrar todos mis datos</button></div></div>
     <div class="card sc"><h2>Últimos registros</h2><table><tr><th>Fecha</th><th>kWh</th><th>kW pico</th><th>Irrad.</th><th></th></tr>
     ${R.map(g => `<tr><td>${g.date}</td><td>${g.kwh}</td><td>${g.pk}</td><td>${g.irr}</td><td><button onclick="delGen('${g.date}')">✕</button></td></tr>`).join('')}</table></div>`;
@@ -250,7 +278,7 @@ const V = {
     if (a.pr == null) return '<div class="card">Se necesitan al menos 10 días de datos con irradiancia para analizar.</div>';
     return `<div id="fc"></div><div class="card"><h2>🤖 Análisis inteligente – ${esc(ins.name)}</h2>
       <p class="mu">Método: el sistema aprende un modelo propio de esta instalación (regresión robusta: energía esperada = a + b × irradiancia, ajustada descartando los días atípicos). Compara cada día real contra lo esperado y marca desvíos mayores a 3 desvíos robustos (MAD), generaciones nulas con sol y caídas sostenidas en los últimos 10 días.</p>
-      <div class="row"><span>Salud estimada: <b>${a.health}/100</b></span><span>PR típico: <b>${f1(a.pr*100)}%</b></span><span>Alimenta: <b>${esc(ins.use)}</b></span></div>
+      <div class="row"><span>Salud estimada: <b>${a.health}/100</b></span><span>PR típico: <b>${f1(a.pr*100)}%</b></span><span>Alimenta: <b>${esc(ins.use)}</b></span><span>Días con irradiancia: <b>${rows(cur).filter(g => g.irr > .5).length}/${rows(cur).length}</b></span></div>
       <h2>Real vs. esperado por el modelo (kWh, últimos 30 días)</h2>${(() => { const R = rows(cur).slice(-30); return chart(R.map(g => g.date.slice(5)), [{n:'Real', v:R.map(g => g.kwh)}, {n:'Esperado', v:R.map(g => g.irr > .5 ? +a.ex(g).toFixed(2) : null)}]); })()}
       <h2>Hallazgos</h2>${a.F.slice(0,12).map(f => `<p><span class="tag ${f.s}">${f.s.toUpperCase()}</span> <b>${f.d}</b> – ${esc(f.t)}</p>`).join('') || '<p>✅ Sin comportamientos anormales.</p>'}
       <h2>Recomendaciones de inspección y mantenimiento</h2><ol>${a.rec.map(r => `<li>${esc(r)}</li>`).join('') || '<li>Continuar con el monitoreo habitual.</li>'}</ol></div>`;
@@ -285,10 +313,14 @@ async function addPanel(){
 }
 const delPanel = id => run(sb.from('panels').delete().eq('id', id));
 async function addGen(){
-  const d = $('#gd').value;
+  const d = $('#gd').value, kwh = +$('#gk').value, pk = +$('#gp').value || 0; let irr = +$('#gi').value || 0;
   if (!cur || !d || $('#gk').value === '') return alert('Falta la fecha o la energía.');
+  if (!(irr > 0)) {                                                                       // irradiancia vacía: se pide a Open-Meteo
+    try { const m = await irrMap(I(cur), [d]); if (m[d] != null) { irr = m[d]; toast(`☀️ Irradiancia obtenida de Open-Meteo: ${irr} kWh/m²`); } }
+    catch (e) { toast('No se pudo obtener la irradiancia automática: ' + e.message); }
+  }
   const antes = new Set(analyze(cur).F.filter(f => f.s === 'alta').map(f => f.d));      // anomalías graves que ya existían
-  const ok = await run(sb.from('generation').upsert({project_id:cur, date:d, kwh:+$('#gk').value, pk:+$('#gp').value || 0, irr:+$('#gi').value || 0}, {onConflict:'project_id,date'}));
+  const ok = await run(sb.from('generation').upsert({project_id:cur, date:d, kwh, pk, irr}, {onConflict:'project_id,date'}));
   if (!ok) return;
   const nueva = analyze(cur).F.find(f => f.s === 'alta' && f.d === d && !antes.has(d));  // anomalía grave NUEVA en el día cargado
   if (nueva) await alertTg(`🚨 SolarIA – ${I(cur).name}: anomalía grave el ${d}. ${nueva.t}`);
@@ -324,6 +356,7 @@ function cmpM(){
   const a = g(A), b = g(B), s = x => x.reduce((t,y) => t + y.kwh, 0), ta = s(a), tb = s(b), L = Math.max(a.length, b.length), dl = ta ? (tb-ta)/ta*100 : 0;
   $('#rm').innerHTML = `<p>${A}: <b>${f1(ta)} kWh</b> (prom. ${f1(ta/(a.length||1))}/día) · ${B}: <b>${f1(tb)} kWh</b> (prom. ${f1(tb/(b.length||1))}/día) · Diferencia: <b>${dl > 0 ? '+' : ''}${f1(dl)}%</b></p>`
     + chart(Array.from({length:L}, (_,i) => i+1), [{n:A, v:a.map(x => x.kwh)}, {n:B, v:b.map(x => x.kwh)}]);
+  drawCharts();
 }
 function cmpD(){
   const R = rows(cur), a = R.find(x => x.date == $('#da').value), b = R.find(x => x.date == $('#db2').value);
@@ -344,6 +377,7 @@ function genRep(){
     + chart(R.map(g => g.date.slice(8)), [{n:'kWh', v:R.map(g => g.kwh)}], 1)
     + `<h3>Eventos del mes</h3>${E.map(e => `<p>${e.date} – <b>${e.type}</b>: ${esc(e.desc)}</p>`).join('') || '<p class="mu">Sin eventos.</p>'}
     <div class="noprint"><h3>Datos (CSV)</h3><textarea class="csv" readonly>${esc(csv)}</textarea></div>`;
+  drawCharts();
 }
 
 /* ---------- estado en vivo (lecturas de dispositivos) ---------- */
@@ -380,6 +414,7 @@ async function liveLoad(){
     ${d.data.map(x => `<tr><td>${esc(x.name)}</td><td><code>${esc(x.key)}</code></td><td>${x.last_seen ? new Date(x.last_seen).toLocaleString() : '–'}</td><td><button onclick="delDevice('${x.id}')">✕</button></td></tr>`).join('') || '<tr><td colspan="4" class="mu">Ninguno todavía.</td></tr>'}</table>
     <div class="row" style="margin-top:8px"><button class="pri" onclick="addDevice()">Crear dispositivo para este proyecto</button></div>
     <p class="mu">Los dispositivos envían sus lecturas a <code>${esc(SUPABASE_URL)}/rest/v1/rpc/ingest_reading</code> con su clave. Mirá la carpeta <b>tools/</b> (simulador y ejemplo de ESP32).</p></div>`;
+  drawCharts();
 }
 const addDevice = () => run(sb.from('devices').insert({project_id:cur, name:'Dispositivo'}), liveLoad);
 const delDevice = id => run(sb.from('devices').delete().eq('id', id), liveLoad);
@@ -480,8 +515,7 @@ async function geocode(loc){
 async function forecastFor(ins){
   const key = ins.id + '|' + ins.loc, c = fcCache[key];
   if (c && Date.now() - c.t < 18e5) return c.v;
-  const g = await geocode(ins.loc || '');
-  if (!g) throw new Error('No se encontró la ubicación «' + (ins.loc || '') + '». Escribila como «Ciudad, Provincia» en la ficha.');
+  const g = await geoFor(ins);
   const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${g.lat}&longitude=${g.lon}&daily=shortwave_radiation_sum&forecast_days=3&timezone=auto`);
   if (!r.ok) throw new Error('Open-Meteo no respondió');
   const j = await r.json(), v = {place:g.name, days:j.daily.time.map((d,i) => ({date:d, mj:j.daily.shortwave_radiation_sum[i]}))};   // MJ/m² por día
@@ -510,6 +544,43 @@ async function forecastCard(){
   }
 }
 
+/* ---------- irradiancia automática (Open-Meteo: histórico + últimos 92 días, sin clave) ---------- */
+const geoCache = {};
+async function geoFor(ins){
+  const k = ins.loc || '';
+  if (!geoCache[k]) {
+    const g = await geocode(k);
+    if (!g) throw new Error('No se encontró la ubicación «' + k + '». Escribila como «Ciudad, Provincia» en la ficha.');
+    geoCache[k] = g;
+  }
+  return geoCache[k];
+}
+// Devuelve {fecha: kWh/m²}. Fechas recientes: API de pronóstico con past_days; fechas viejas: API de archivo histórico (ERA5).
+async function irrMap(ins, dates){
+  const g = await geoFor(ins), lim = iso(new Date(Date.now() - 88*864e5)), m = {};
+  const old = dates.filter(d => d < lim).sort(), rec = dates.filter(d => d >= lim);
+  const get = async url => {
+    const r = await fetch(url); if (!r.ok) throw new Error('Open-Meteo no respondió (' + r.status + ')');
+    const j = await r.json(); (j.daily.time || []).forEach((d,i) => { const v = j.daily.shortwave_radiation_sum[i]; if (v != null) m[d] = +(v/3.6).toFixed(2); });   // MJ/m² → kWh/m²
+  };
+  const base = `latitude=${g.lat}&longitude=${g.lon}&daily=shortwave_radiation_sum&timezone=auto`;
+  if (rec.length) await get(`https://api.open-meteo.com/v1/forecast?${base}&past_days=92&forecast_days=1`);
+  if (old.length) await get(`https://archive-api.open-meteo.com/v1/archive?${base}&start_date=${old[0]}&end_date=${old[old.length-1]}`);
+  return m;
+}
+async function fillIrr(){
+  const ins = I(cur); if (!ins) return;
+  const miss = rows(cur).filter(g => !(g.irr > 0));
+  if (!miss.length) return toast('Todos los días ya tienen irradiancia');
+  toast('Consultando Open-Meteo…');
+  try {
+    const m = await irrMap(ins, miss.map(g => g.date));
+    const up = miss.filter(g => m[g.date] != null).map(g => ({project_id:cur, date:g.date, kwh:g.kwh, pk:g.pk, irr:m[g.date]}));
+    if (!up.length) return toast('Open-Meteo no devolvió datos para esas fechas');
+    if (await run(sb.from('generation').upsert(up, {onConflict:'project_id,date'}))) toast(`☀️ Irradiancia completada en ${up.length} de ${miss.length} días`);
+  } catch (e) { toast('No se pudo obtener la irradiancia: ' + e.message); }
+}
+
 /* ---------- arranque ---------- */
 function render(){
   if (!user) {
@@ -530,6 +601,7 @@ function render(){
   $('#app').innerHTML = V[tab]();
   if (tab === 'live') liveStart(); else liveStop();
   if (tab === 'panel' || tab === 'ia') forecastCard();
+  drawCharts();
 }
 function boot(){
   if (user) {
