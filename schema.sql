@@ -10,6 +10,10 @@ create table public.projects (
   use_detail  text,
   inverter    text,
   description text,
+  tariff      numeric default 0,   -- tarifa eléctrica ($/kWh)
+  investment  numeric default 0,   -- costo inicial de la instalación ($)
+  tg_token    text,                -- token del bot de Telegram (opcional)
+  tg_chat_id  text,                -- Chat ID de Telegram (opcional)
   created_at  timestamptz default now()
 );
 
