@@ -187,6 +187,7 @@ const V = {
     const trend = previous ? (energy-previous)/previous*100 : null, a = analyze(cur);
     const alerts = a.F.filter(f => f.s != 'info' && f.d >= cutoff), dates = new Set(alerts.map(f => f.d));
     const latest = R.at(-1), average = energy/(l30.length||1), maxPower = Math.max(0,...l30.map(g => g.pk));
+    const dailyPr = l30.map(g => { const value = pr(g,kwp(ins)); return value == null ? null : +(value*100).toFixed(1); });
     const events = db.ev.filter(e => e.inst == cur).sort((x,y) => x.date < y.date ? 1 : -1).slice(0,3);
     const months = Array.from({length:6}, (_,idx) => {
       const monthDate = new Date(today.getFullYear(),today.getMonth()-5+idx,1), key = iso(monthDate).slice(0,7);
@@ -209,6 +210,10 @@ const V = {
         <p class="health-caption">Índice estimado a partir de anomalías de producción; no reemplaza una inspección técnica.</p>
         <div class="alert-summary"><b>${alerts.length}</b><span>${alerts.length == 1 ? 'alerta en los últimos 30 días' : 'alertas en los últimos 30 días'}</span></div>
         ${alerts.length ? `<ul class="alert-list">${alerts.slice(0,2).map(f => `<li><span class="tag ${f.s}">${f.s == 'alta' ? 'Alta' : 'Media'}</span><span>${esc(f.t)}</span></li>`).join('')}</ul>` : '<p class="clear-note">Sin anomalías recientes detectadas.</p>'}</article></section>
+    <section class="chart-grid"><article class="surface"><div class="surface-heading"><div><span class="eyebrow">POTENCIA</span><h3>Pico diario · kW</h3></div><span class="unit-label">Últimos 30 días</span></div>
+      ${chart(l30.map(g => g.date.slice(5)), [{n:'kW',v:l30.map(g => g.pk)}])}</article>
+      <article class="surface"><div class="surface-heading"><div><span class="eyebrow">EFICIENCIA</span><h3>Performance Ratio · %</h3></div><span class="unit-label">Ajustado por irradiancia</span></div>
+      ${chart(l30.map(g => g.date.slice(5)), [{n:'PR',v:dailyPr}])}</article></section>
     <section class="dashboard-grid lower-grid"><article class="surface"><div class="surface-heading"><div><span class="eyebrow">TENDENCIA</span><h3>Producción por mes</h3></div><button class="text-action" onclick="tab='cmp';render()">Comparar períodos →</button></div>
       ${chart(months.map(m => m.label), [{n:'kWh',v:months.map(m => m.kwh)}], 1)}</article>
       <article class="surface event-surface"><div class="surface-heading"><div><span class="eyebrow">BITÁCORA</span><h3>Fallas y mantenimiento</h3></div><button class="text-action" onclick="tab='ev';render()">Ver todo →</button></div>

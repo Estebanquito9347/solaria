@@ -62,6 +62,7 @@ p{margin:8px 0}
 .trend-up{color:#317558;font-weight:800}.trend-down{color:var(--bad);font-weight:800}
 .dashboard-grid{display:grid;grid-template-columns:minmax(0,1.8fr) minmax(270px,1fr);gap:14px;margin-bottom:14px}
 .lower-grid{grid-template-columns:minmax(0,1.25fr) minmax(300px,1fr)}
+.chart-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-bottom:14px}
 .surface{min-width:0;padding:18px 19px;border:1px solid var(--bd);border-radius:8px;background:var(--surface);box-shadow:var(--shadow);animation:rise .42s ease both}
 .surface-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
 .unit-label{color:var(--mu);font-size:11px}
@@ -118,7 +119,7 @@ svg text{fill:var(--mu);font-size:11px}
 .auth{max-width:440px;margin:8vh auto;padding:28px}
 .auth h2{font-size:22px}
 @keyframes rise{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
-@media(max-width:850px){.kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-grid,.lower-grid{grid-template-columns:1fr}.dashboard-head{align-items:flex-start;flex-direction:column}.head-actions{width:100%}.health-surface{min-height:0}}
+@media(max-width:850px){.kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-grid,.lower-grid,.chart-grid{grid-template-columns:1fr}.dashboard-head{align-items:flex-start;flex-direction:column}.head-actions{width:100%}.health-surface{min-height:0}}
 @media(max-width:560px){.topbar{align-items:flex-start;flex-direction:column;padding:13px 16px}.top-controls{width:100%;justify-content:space-between;gap:8px}.top-controls .row{max-width:60%}.topbar select{max-width:180px}nav{padding:12px 12px 0}main{padding:18px 12px 32px}.dashboard-head h2{font-size:25px}.head-actions button{flex:1}.status-strip{flex-wrap:wrap;gap:7px;font-size:11px}.status-divider{display:none}.status-strip .text-action{margin-left:auto}.kpi-grid{gap:8px}.metric{padding:13px}.metric>strong{font-size:23px}.metric>span{font-size:11px}.metric-foot{font-size:10px}.surface{padding:14px}.unit-label{max-width:110px;text-align:right}.empty-state{margin:5vh auto;padding:24px}.row>*{max-width:100%}.row label{flex:1 1 145px}table{font-size:12px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
 @media print{body{background:#fff;color:#000}.topbar,nav,.noprint,button{display:none!important}main{max-width:none;padding:0}.surface,.metric,.card{break-inside:avoid;box-shadow:none}.dashboard-grid{grid-template-columns:1fr 1fr}}
