@@ -451,7 +451,7 @@ async function liveLoad(){
     <div class="card sc"><h2>Dispositivos vinculados</h2><table><tr><th>Nombre</th><th>Clave del dispositivo</th><th>Último contacto</th><th></th></tr>
     ${d.data.map(x => `<tr><td>${esc(x.name)}</td><td><code>${esc(x.key)}</code></td><td>${x.last_seen ? new Date(x.last_seen).toLocaleString() : '–'}</td><td><button onclick="delDevice('${x.id}')">✕</button></td></tr>`).join('') || '<tr><td colspan="4" class="mu">Ninguno todavía.</td></tr>'}</table>
     <div class="row" style="margin-top:8px"><button class="pri" onclick="addDevice()">Crear dispositivo para este proyecto</button></div>
-    <p class="mu">Los dispositivos envían sus lecturas a <code>${esc(SUPABASE_URL)}/rest/v1/rpc/ingest_reading</code> con su clave. Mirá la carpeta <b>tools/</b> (simulador y ejemplo de ESP32).</p></div>`;
+    <p class="mu">Los dispositivos envían sus lecturas a <code>${esc(SUPABASE_URL)}/rest/v1/rpc/ingest_reading</code> con su clave. Consultá <b>README.md</b> para la configuración del endpoint y el formato de los datos.</p></div>`;
   drawCharts();
 }
 const addDevice = () => run(sb.from('devices').insert({project_id:cur, name:'Dispositivo'}), liveLoad);
