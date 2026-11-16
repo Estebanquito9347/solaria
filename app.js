@@ -420,7 +420,15 @@ function genRep(){
 
 /* ---------- estado en vivo (lecturas de dispositivos) ---------- */
 let lv = {ch:null, t:null};
+let pendingDeviceKey = null;
 function liveStop(){ if (lv.ch) { sb.removeChannel(lv.ch); lv.ch = null; } clearInterval(lv.t); }
+function deviceKeyCard(){
+  if (!pendingDeviceKey) return '';
+  return `<div class="card device-key-card"><h2>Guardá la clave del dispositivo</h2>
+    <p>Se muestra solo ahora. Copiala y guardala en el ESP32; después no se puede volver a consultar.</p>
+    <code class="device-key-value">${esc(pendingDeviceKey)}</code>
+    <div class="row"><button class="pri" onclick="copyDeviceKey()">Copiar clave</button><button onclick="dismissDeviceKey()">Ya la guardé</button></div></div>`;
+}
 async function liveStart(){
   liveStop(); if (!cur) return $('#live').innerHTML = '<div class="card">Creá un proyecto primero.</div>';
   if (localMode) return $('#live').innerHTML = '<div class="card">El estado en vivo necesita Supabase (recibe lecturas de dispositivos). En modo demostración local no está disponible.</div>';
@@ -433,9 +441,9 @@ async function liveLoad(){
   const since = new Date(Date.now() - 864e5).toISOString();
   const [r, d] = await Promise.all([
     sb.from('readings').select('ts,power_kw,energy_kwh,irr_wm2').eq('project_id', cur).gte('ts', since).order('ts', {ascending:false}).limit(600),
-    sb.from('devices').select('*').eq('project_id', cur).order('created_at')]);
+    sb.from('devices').select('id,name,last_seen,created_at').eq('project_id', cur).order('created_at')]);
   const box = $('#live'); if (!box) return;
-  if (r.error || d.error) return box.innerHTML = `<div class="card">Error: ${esc((r.error || d.error).message)}. ¿Ejecutaste schema_live.sql?</div>`;
+  if (r.error || d.error) return box.innerHTML = `${deviceKeyCard()}<div class="card">Error: ${esc((r.error || d.error).message)}. ¿Ejecutaste schema_live.sql?</div>`;
   const L = r.data[0], age = L ? (Date.now() - new Date(L.ts))/6e4 : null, h = new Date().getHours(), clockDay = h >= 7 && h < 19;
   const sun = L && L.irr_wm2 != null ? L.irr_wm2 > 200 : clockDay;
   let st;
@@ -445,16 +453,36 @@ async function liveLoad(){
   else if (L.power_kw > 0.05) st = ['🟢','Generando','La instalación está produciendo con normalidad.'];
   else st = sun ? ['🟡','Sin producción con sol','Hay irradiancia pero la potencia es nula: posible falla del inversor, protección disparada o corte de red.'] : ['⚪','Sin producción','No hay sol suficiente en este momento.'];
   const pts = r.data.slice().reverse(), step = Math.ceil(pts.length/150) || 1, S = pts.filter((_,i) => i % step == 0);
-  box.innerHTML = `<div class="card"><h2 style="font-size:22px">${st[0]} ${st[1]}</h2><p>${st[2]}</p><small class="mu">${L ? 'Último dato: ' + new Date(L.ts).toLocaleString() : ''}</small></div>
+  box.innerHTML = `${deviceKeyCard()}
+    <div class="card"><h2 style="font-size:22px">${st[0]} ${st[1]}</h2><p>${st[2]}</p><small class="mu">${L ? 'Último dato: ' + new Date(L.ts).toLocaleString() : ''}</small></div>
     ${L ? `<div class="grid"><div class="card kpi"><small>Potencia actual</small><b>${f1(L.power_kw)} kW</b></div><div class="card kpi"><small>Energía de hoy</small><b>${L.energy_kwh != null ? f1(L.energy_kwh) + ' kWh' : '–'}</b></div><div class="card kpi"><small>Irradiancia</small><b>${L.irr_wm2 != null ? Math.round(L.irr_wm2) + ' W/m²' : '–'}</b></div></div>
     <div class="card"><h2>Potencia (kW) – últimas 24 h</h2>${chart(S.map(x => new Date(x.ts).toTimeString().slice(0,5)), [{n:'kW', v:S.map(x => +x.power_kw)}])}</div>` : ''}
-    <div class="card sc"><h2>Dispositivos vinculados</h2><table><tr><th>Nombre</th><th>Clave del dispositivo</th><th>Último contacto</th><th></th></tr>
-    ${d.data.map(x => `<tr><td>${esc(x.name)}</td><td><code>${esc(x.key)}</code></td><td>${x.last_seen ? new Date(x.last_seen).toLocaleString() : '–'}</td><td><button onclick="delDevice('${x.id}')">✕</button></td></tr>`).join('') || '<tr><td colspan="4" class="mu">Ninguno todavía.</td></tr>'}</table>
+    <div class="card sc"><h2>Dispositivos vinculados</h2><table><tr><th>Nombre</th><th>Último contacto</th><th></th></tr>
+    ${d.data.map(x => `<tr><td>${esc(x.name)}</td><td>${x.last_seen ? new Date(x.last_seen).toLocaleString() : '–'}</td><td><button onclick="delDevice('${x.id}')">Eliminar</button></td></tr>`).join('') || '<tr><td colspan="3" class="mu">Ninguno todavía.</td></tr>'}</table>
     <div class="row" style="margin-top:8px"><button class="pri" onclick="addDevice()">Crear dispositivo para este proyecto</button></div>
     <p class="mu">Los dispositivos envían sus lecturas a <code>${esc(SUPABASE_URL)}/rest/v1/rpc/ingest_reading</code> con su clave. Consultá <b>README.md</b> para la configuración del endpoint y el formato de los datos.</p></div>`;
   drawCharts();
 }
-const addDevice = () => run(sb.from('devices').insert({project_id:cur, name:'Dispositivo'}), liveLoad);
+async function addDevice(){
+  const {data, error} = await sb.rpc('create_device', {p_project_id:cur, p_name:'Dispositivo'});
+  if (fail(error)) return;
+  if (!data || typeof data.device_key !== 'string') return alert('Supabase creó el dispositivo, pero no devolvió su clave. Revisá la función create_device.');
+  pendingDeviceKey = data.device_key;
+  await liveLoad();
+}
+async function copyDeviceKey(){
+  if (!pendingDeviceKey) return;
+  try {
+    await navigator.clipboard.writeText(pendingDeviceKey);
+    toast('Clave copiada. Guardala en un lugar seguro.');
+  } catch (error) {
+    alert('No se pudo copiar automáticamente. Seleccioná la clave y copiala manualmente.');
+  }
+}
+function dismissDeviceKey(){
+  pendingDeviceKey = null;
+  liveLoad();
+}
 const delDevice = id => run(sb.from('devices').delete().eq('id', id), liveLoad);
 
 /* ---------- modo demostración local: imita la API de Supabase usando localStorage ---------- */
