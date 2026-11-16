@@ -2,7 +2,7 @@
 const TABS = [['panel','Panel'],['live','En vivo'],['clima','Clima'],['proy','Proyectos'],['gen','Generación'],['cmp','Comparar'],['ev','Fallas y mant.'],['ia','Análisis IA'],['chat','Asistente'],['rep','Reportes']];
 const USES = ['Vivienda','Industria / taller','Bombeo / riego','Comercio','Alumbrado','Otro'];
 let tab = 'panel', cur = null, user = null, db = null;
-const locationMaps = [];
+const locationMaps = new Map();
 
 /* ---------- utilidades ---------- */
 const $ = s => document.querySelector(s);
@@ -212,8 +212,9 @@ function fichaProyecto(i){
     <label>Ubicación del proyecto — hacé clic en el mapa o arrastrá el marcador</label>
     <div id="editMap" role="application" aria-label="Mapa para seleccionar la ubicación del proyecto"></div>
     <input id="editLat" type="hidden" value="${i.lat ?? ''}"><input id="editLon" type="hidden" value="${i.lon ?? ''}">
-    <small id="editLocationStatus" class="mu">${i.lat != null ? 'Coordenadas guardadas: ' + i.lat + ', ' + i.lon : 'Seleccioná un punto en el mapa para guardar la ubicación.'}</small>
-    <div class="row"><label>Referencia (opcional, por ejemplo ciudad o dirección)<input id="eloc" value="${esc(i.loc)}"></label><button onclick="detectLoc()">📍 Usar mi ubicación (GPS)</button></div>
+    <small id="editLocationStatus" class="mu" role="status" aria-live="polite">${i.lat != null ? 'Coordenadas guardadas: ' + i.lat + ', ' + i.lon : 'Seleccioná un punto en el mapa o buscá una ubicación.'}</small>
+    <div class="row"><label>Ciudad, provincia o dirección<input id="eloc" value="${esc(i.loc)}" placeholder="Arroyito, Córdoba, Argentina" onkeydown="if(event.key==='Enter'){event.preventDefault();searchLocation('edit')}"></label>
+    <button id="editLocationSearch" onclick="searchLocation('edit')">Buscar en el mapa</button><button onclick="detectLoc()">📍 Usar mi ubicación (GPS)</button></div>
     <div class="row"><label>Tarifa eléctrica ($/kWh)<input id="etf" type="number" step="0.01" min="0" value="${i.tariff || ''}"></label>
     <label>Inversión inicial ($)<input id="ect" type="number" step="1" min="0" value="${i.cost || ''}"></label></div>
     <div class="row"><label>Telegram – token del bot (opcional)<input id="etk" type="password" autocomplete="off" value="${esc(i.tgToken)}"></label>
@@ -265,8 +266,9 @@ const V = {
       <label>Elegí la ubicación del proyecto en el mapa</label>
       <div id="newMap" role="application" aria-label="Mapa para elegir la ubicación del proyecto"></div>
       <input id="newLat" type="hidden"><input id="newLon" type="hidden">
-      <small id="newLocationStatus" class="mu">Hacé clic en el mapa para marcar la ubicación.</small>
-      <div class="row"><label>Referencia opcional (ciudad o dirección)<input id="l"></label></div>
+      <small id="newLocationStatus" class="mu" role="status" aria-live="polite">Hacé clic en el mapa o buscá una ubicación; después podés ajustar el marcador.</small>
+      <div class="row"><label>Ciudad, provincia o dirección<input id="l" placeholder="Arroyito, Córdoba, Argentina" onkeydown="if(event.key==='Enter'){event.preventDefault();searchLocation('new')}"></label>
+      <button id="newLocationSearch" onclick="searchLocation('new')">Buscar en el mapa</button></div>
       <div class="row"><label>Tarifa eléctrica ($/kWh)<input id="tf" type="number" step="0.01" min="0"></label><label>Inversión inicial ($)<input id="ct" type="number" step="1" min="0"></label></div>
       <label>Descripción / utilidad<textarea id="ds" rows="2"></textarea></label>
       <div class="row" style="margin-top:8px"><button class="pri" onclick="addProj()">Crear proyecto</button></div></div>
@@ -545,8 +547,10 @@ async function geocode(loc){
   const r = await fetch('https://geocoding-api.open-meteo.com/v1/search?count=10&language=es&name=' + encodeURIComponent(parts[0]));
   if (!r.ok) throw new Error('El servicio de ubicaciones no respondió');
   const res = (await r.json()).results || [], rest = parts.slice(1).map(x => x.toLowerCase());
-  const hit = res.find(x => rest.every(w => (x.admin1 || '').toLowerCase().includes(w) || (x.country || '').toLowerCase().includes(w))) || res[0];
-  return hit ? {lat:hit.latitude, lon:hit.longitude, name:hit.name + ', ' + (hit.admin1 || hit.country)} : null;
+  const hit = rest.length
+    ? res.find(x => rest.every(w => (x.admin1 || '').toLowerCase().includes(w) || (x.country || '').toLowerCase().includes(w)))
+    : res[0];
+  return hit ? {lat:hit.latitude, lon:hit.longitude, name:[hit.name, hit.admin1, hit.country].filter(Boolean).join(', ')} : null;
 }
 async function forecastFor(ins){
   const key = ins.id + '|' + ins.loc, c = fcCache[key];
@@ -645,7 +649,8 @@ function selectedMapPoint(latId, lonId){
     ? {latitude, longitude} : null;
 }
 function clearLocationMaps(){
-  while (locationMaps.length) locationMaps.pop().remove();
+  for (const state of locationMaps.values()) state.map.remove();
+  locationMaps.clear();
 }
 function initLocationMap(mapId, latId, lonId, statusId, location, lat, lon){
   const container = document.getElementById(mapId), status = document.getElementById(statusId);
@@ -656,13 +661,14 @@ function initLocationMap(mapId, latId, lonId, statusId, location, lat, lon){
   }
   const hasPoint = lat != null && lon != null && Number.isFinite(+lat) && Number.isFinite(+lon);
   const map = L.map(container).setView(hasPoint ? [+lat, +lon] : [-34.6, -58.4], hasPoint ? 15 : 5);
-  locationMaps.push(map);
+  const state = {map, revision:0, selectPoint:null};
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom:19, attribution:'&copy; OpenStreetMap'
   }).addTo(map);
   let marker = null;
   const selectPoint = point => {
     if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng) || Math.abs(point.lat) > 90 || Math.abs(point.lng) > 180) return;
+    state.revision++;
     const latitude = +point.lat.toFixed(6), longitude = +point.lng.toFixed(6);
     if (marker) marker.setLatLng([latitude, longitude]);
     else {
@@ -673,16 +679,59 @@ function initLocationMap(mapId, latId, lonId, statusId, location, lat, lon){
     $(`#${lonId}`).value = longitude;
     status.textContent = `Punto seleccionado: ${latitude}, ${longitude}`;
   };
+  state.selectPoint = selectPoint;
+  locationMaps.set(mapId, state);
   if (hasPoint) selectPoint({lat:+lat, lng:+lon});
   map.on('click', event => selectPoint(event.latlng));
   if (!hasPoint && location) {
+    const revision = state.revision;
     geocode(location).then(point => {
-      if (!point || !container.isConnected) return;
+      if (!point || !container.isConnected || state.revision !== revision) return;
       map.setView([point.lat, point.lon], 14);
       selectPoint({lat:point.lat, lng:point.lon});
     }).catch(error => {
-      if (container.isConnected) status.textContent = `No se pudo ubicar "${location}" automáticamente (${error.message}). Elegí el punto en el mapa.`;
+      if (container.isConnected && state.revision === revision) status.textContent = `No se pudo ubicar "${location}" automáticamente (${error.message}). Elegí el punto en el mapa.`;
     });
+  }
+}
+async function searchLocation(prefix){
+  const isNew = prefix === 'new', input = $(isNew ? '#l' : '#eloc');
+  const status = $(isNew ? '#newLocationStatus' : '#editLocationStatus');
+  const button = $(isNew ? '#newLocationSearch' : '#editLocationSearch');
+  const mapId = isNew ? 'newMap' : 'editMap', query = input.value.trim();
+  if (button.disabled) return;
+  if (!query) {
+    status.textContent = 'Escribí una ciudad o dirección para buscarla en el mapa.';
+    input.focus();
+    return;
+  }
+  const state = locationMaps.get(mapId), revision = state ? ++state.revision : 0;
+  const isCurrentSearch = () => input.isConnected && status.isConnected && input.value.trim() === query
+    && locationMaps.get(mapId) === state && (!state || state.revision === revision);
+  button.disabled = true;
+  button.textContent = 'Buscando…';
+  status.textContent = `Buscando "${query}"…`;
+  try {
+    const place = await geocode(query);
+    if (!isCurrentSearch()) return;
+    if (!place) {
+      status.textContent = `No encontramos "${query}". Probá con ciudad, provincia y país.`;
+      return;
+    }
+    if (!state) {
+      status.textContent = 'El mapa todavía no está listo. Volvé a intentarlo.';
+      return;
+    }
+    state.map.setView([place.lat, place.lon], 14);
+    state.selectPoint({lat:place.lat, lng:place.lon});
+    status.textContent = `Ubicación encontrada: ${place.name}. Podés ajustar el marcador en el mapa.`;
+  } catch (error) {
+    if (isCurrentSearch()) status.textContent = `No se pudo buscar la ubicación: ${error.message}`;
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = 'Buscar en el mapa';
+    }
   }
 }
 function initLocationMaps(){
