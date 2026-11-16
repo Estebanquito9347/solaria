@@ -1,5 +1,5 @@
 /* SolarIA – lógica de la aplicación (sin librerías externas) */
-const TABS = [['panel','Panel'],['live','En vivo'],['proy','Proyectos'],['gen','Generación'],['cmp','Comparar'],['ev','Fallas y mant.'],['ia','Análisis IA'],['rep','Reportes']];
+const TABS = [['panel','Panel'],['live','En vivo'],['clima','Clima'],['proy','Proyectos'],['gen','Generación'],['cmp','Comparar'],['ev','Fallas y mant.'],['ia','Análisis IA'],['chat','Asistente'],['rep','Reportes']];
 const USES = ['Vivienda','Industria / taller','Bombeo / riego','Comercio','Alumbrado','Otro'];
 let tab = 'panel', cur = null, user = null, db = null;
 
@@ -63,7 +63,7 @@ async function loadAll(){
   const [p, pa, g, ev] = R.map(r => r.data);
   p.sort((a,b) => a.created_at < b.created_at ? -1 : 1);
   db = {
-    inst: p.map(x => ({id:x.id, name:x.name, loc:x.location || '', date:x.start_date || '', use:x.use || 'Otro', useDetail:x.use_detail || '', inv:x.inverter || '', desc:x.description || '', tariff:+x.tariff || 0, cost:+x.investment || 0, tgToken:x.tg_token || '', tgChat:x.tg_chat_id || '',
+    inst: p.map(x => ({id:x.id, name:x.name, loc:x.location || '', date:x.start_date || '', use:x.use || 'Otro', useDetail:x.use_detail || '', inv:x.inverter || '', desc:x.description || '', tariff:+x.tariff || 0, cost:+x.investment || 0, tgToken:x.tg_token || '', tgChat:x.tg_chat_id || '', lat:x.latitude == null ? null : +x.latitude, lon:x.longitude == null ? null : +x.longitude,
       panels: pa.filter(y => y.project_id == x.id).map(y => ({id:y.id, brand:y.brand || '', model:y.model || '', qty:y.qty, wp:+y.wp, type:y.type || '', eff:+y.eff}))})),
     gen: g.map(x => ({inst:x.project_id, date:x.date, kwh:+x.kwh, pk:+x.pk, irr:+x.irr})),
     ev:  ev.map(x => ({id:x.id, inst:x.project_id, date:x.date, type:x.type, desc:x.description || ''}))
@@ -165,11 +165,14 @@ function fitModel(R){
 /* ---------- IA: detección de anomalías y recomendaciones ---------- */
 function analyze(id){
   const ins = I(id), R = rows(id), F = [], rec = new Set();
-  if (!ins || R.length < 10) return {F, rec:[], pr:null};
-  const k = kwp(ins), md = fitModel(R), ex = g => Math.max(md.a + md.b*g.irr, .1);
+  if (!ins) return {F, rec:[], pr:null, n:0, learned:false};
+  const nv = R.filter(g => g.irr > .5).length;                         // días utilizables (con generación e irradiancia)
+  if (!(kwp(ins) > 0) || !nv) return {F, rec:[], pr:null, n:nv, learned:false, noPanels:!(kwp(ins) > 0)};
+  // Arranque en frío: con menos de 10 días se compara contra una referencia teórica (PR 80%); desde 10 días se aprende el modelo propio
+  const k = kwp(ins), learned = nv >= 10, md = learned ? fitModel(R) : {a:0, b:k*.8}, ex = g => Math.max(md.a + md.b*g.irr, .1);
   const P = R.map(g => ({g, p: g.irr > .5 ? g.kwh/ex(g) : null})), valid = P.filter(x => x.p != null);   // p = real ÷ esperado
-  const m = med(valid.map(x => x.p));
-  const mad = Math.max(1.4826 * med(valid.map(x => Math.abs(x.p - m))), .04);   // desvío robusto
+  const m = learned ? med(valid.map(x => x.p)) : 1;
+  const mad = learned ? Math.max(1.4826 * med(valid.map(x => Math.abs(x.p - m))), .04) : .1;   // desvío robusto (o umbral fijo en modo referencia)
   for (const {g,p} of P) {
     if (g.irr >= 3 && g.kwh < .05*k) {
       F.push({s:'alta', d:g.date, t:`Generación nula con buena irradiancia (${g.irr} kWh/m²): posible falla total del inversor, corte de red o protección disparada.`});
@@ -196,7 +199,7 @@ function analyze(id){
   F.sort((a,b) => a.d < b.d ? 1 : -1);
   const bad = F.filter(f => f.s != 'info').length;
   const prs = R.map(g => pr(g,k)).filter(x => x != null);
-  return {F, rec:[...rec], pr:med(prs), ex, health:Math.max(0, 100 - bad*4)};
+  return {F, rec:[...rec], pr:med(prs), ex, n:nv, learned, health:Math.max(0, 100 - bad*4)};
 }
 
 /* ---------- vistas ---------- */
@@ -205,6 +208,8 @@ function fichaProyecto(i){
     <div class="row"><label>¿A qué alimenta?<select id="eu">${USES.map(u => `<option ${u == i.use ? 'selected' : ''}>${u}</option>`).join('')}</select></label>
     <label>Detalle (equipos/cargas)<input id="ed2" value="${esc(i.useDetail)}"></label>
     <label>Inversor<input id="ei" value="${esc(i.inv)}"></label></div>
+    <div class="row"><label>Ubicación (Ciudad, Provincia)<input id="eloc" value="${esc(i.loc)}"></label><button onclick="detectLoc()">📍 Usar mi ubicación (GPS)</button>
+    <small class="mu">${i.lat != null ? 'Coordenadas guardadas: ' + i.lat + ', ' + i.lon : 'Sin coordenadas: se busca por el texto de ubicación'}</small></div>
     <div class="row"><label>Tarifa eléctrica ($/kWh)<input id="etf" type="number" step="0.01" min="0" value="${i.tariff || ''}"></label>
     <label>Inversión inicial ($)<input id="ect" type="number" step="1" min="0" value="${i.cost || ''}"></label></div>
     <div class="row"><label>Telegram – token del bot (opcional)<input id="etk" type="password" autocomplete="off" value="${esc(i.tgToken)}"></label>
@@ -221,12 +226,19 @@ function fichaProyecto(i){
 }
 const V = {
   live(){ return '<div id="live" class="mu">Cargando…</div>'; },
+  clima(){ return '<div id="wx" class="mu">Consultando el clima…</div>'; },
+  chat(){
+    if (!chatLog.length) chatLog.push({r:'b', src:'local', t:`Hola 👋 Soy el asistente de SolarIA. Respondo con los datos reales de tu proyecto${I(cur) ? ' «' + I(cur).name + '»' : ''}. Si algo todavía no lo entiendo, te lo voy a decir. Probá con una de las preguntas de abajo.`});
+    return `<div class="card"><h2>💬 Preguntale a SolarIA</h2><div id="chatlog">${chatHTML()}</div>
+      <div class="row" style="margin-top:8px">${CHIPS.map(c => `<button onclick="sendChat('${c}')">${c}</button>`).join('')}</div>
+      <div class="row"><input id="chatq" style="flex:1;min-width:200px" placeholder="Escribí tu pregunta…" onkeydown="if(event.key==='Enter')sendChat()"><button class="pri" onclick="sendChat()">Enviar</button></div></div>`;
+  },
   panel(){
     const ins = I(cur);
     if (!ins) return '<div class="card">Todavía no tenés proyectos. Andá a <b>Proyectos</b> para crear uno (o cargá datos de ejemplo en <b>Generación</b>).</div>';
     const R = rows(cur), l30 = R.slice(-30), tot = l30.reduce((s,g) => s+g.kwh, 0), a = analyze(cur);
     const an = a.F.filter(f => f.s != 'info'), dates = new Set(an.map(f => f.d));
-    return `<div class="card"><b>${esc(ins.name)}</b> <span class="mu">· ${esc(ins.loc)} · Alimenta: ${esc(ins.use)}</span></div>
+    return `${setupCard(ins, R)}<div class="card"><b>${esc(ins.name)}</b> <span class="mu">· ${esc(ins.loc)} · Alimenta: ${esc(ins.use)}</span></div>
     <div class="grid"><div class="card kpi"><small>Potencia instalada</small><b>${f1(kwp(ins))} kWp</b></div>
     <div class="card kpi"><small>Energía últimos 30 días</small><b>${f1(tot)} kWh</b></div>
     <div class="card kpi"><small>Promedio diario</small><b>${f1(tot/(l30.length||1))} kWh</b></div>
@@ -252,7 +264,12 @@ const V = {
   },
   gen(){
     const R = rows(cur).slice(-15).reverse();
-    return `<div class="card"><h2>Cargar datos de generación</h2>
+    return `<div class="card"><h2>¿Cómo ingresan los datos a SolarIA?</h2>
+      <p class="mu">SolarIA no puede detectar tu instalación por sí sola: necesita que le cuentes qué tenés (la ficha del proyecto) y cuánto genera. Hay tres caminos:</p>
+      <ol><li><b>Manual:</b> cargá un día por vez en el formulario de más abajo.</li><li><b>CSV del inversor:</b> casi todos los inversores exportan un historial; subilo acá.</li><li><b>Automático:</b> un dispositivo (ESP32 o el inversor con su API) envía lecturas solo. Ver la pestaña <b>En vivo</b>.</li></ol>
+      <div class="row"><label>Importar CSV<input id="csvf" type="file" accept=".csv,text/csv"></label><button class="pri" onclick="importCSV()">Importar</button><a download="plantilla_solaria.csv" href="data:text/csv;charset=utf-8,fecha%2Ckwh%2Ckw_pico%2Cirradiancia%0A2026-11-01%2C21.4%2C3.9%2C6.1%0A2026-11-02%2C19.8%2C3.6%2C5.7">Descargar plantilla</a></div>
+      <small class="mu">Columnas: fecha (AAAA-MM-DD o DD/MM/AAAA) y kWh; opcionales: kW pico e irradiancia. Si falta la irradiancia, se completa sola desde Open-Meteo.</small></div>
+    <div class="card"><h2>Cargar datos de generación</h2>
       <div class="row"><label>Fecha<input id="gd" type="date" value="${iso(new Date())}"></label><label>Energía (kWh)<input id="gk" type="number" step="0.01" min="0"></label>
       <label>Potencia pico (kW)<input id="gp" type="number" step="0.01" min="0"></label><label>Irradiancia kWh/m² (vacío = automática)<input id="gi" type="number" step="0.01" min="0"></label><button class="pri" onclick="addGen()">Guardar</button></div>
       <p class="mu">Si dejás la irradiancia vacía, SolarIA la obtiene sola de Open-Meteo según la ubicación del proyecto (${esc(I(cur) ? I(cur).loc || 'sin ubicación' : '')}). Sin irradiancia no se puede modelar el rendimiento.</p>
@@ -275,9 +292,9 @@ const V = {
   },
   ia(){
     const a = analyze(cur), ins = I(cur);
-    if (a.pr == null) return '<div class="card">Se necesitan al menos 10 días de datos con irradiancia para analizar.</div>';
+    if (a.pr == null) return `<div id="fc"></div><div class="card"><h2>🤖 Análisis inteligente</h2><p>${a.noPanels ? 'Cargá los paneles del proyecto (Proyectos → Abrir ficha) para que pueda calcular cuánto debería producir.' : 'Necesito al menos 1 día con generación e irradiancia. Cargá datos en Generación o usá «Completar irradiancia faltante».'}</p></div>`;
     return `<div id="fc"></div><div class="card"><h2>🤖 Análisis inteligente – ${esc(ins.name)}</h2>
-      <p class="mu">Método: el sistema aprende un modelo propio de esta instalación (regresión robusta: energía esperada = a + b × irradiancia, ajustada descartando los días atípicos). Compara cada día real contra lo esperado y marca desvíos mayores a 3 desvíos robustos (MAD), generaciones nulas con sol y caídas sostenidas en los últimos 10 días.</p>
+      <p class="mu">Método: con menos de 10 días con irradiancia, SolarIA compara contra una referencia teórica (energía = kWp × irradiancia × 0,80), así que ya puede avisarte de caídas fuertes desde el primer día. Con 10 días o más aprende un modelo propio de esta instalación (regresión robusta: energía esperada = a + b × irradiancia, descartando días atípicos) y usa su variabilidad real (MAD). ¿Por qué 10? Con menos puntos no se pueden estimar con confianza ni la recta ni la variabilidad normal. Además detecta generación nula con sol y caídas sostenidas.</p><p class="mu"><progress value="${Math.min(a.n,10)}" max="10" style="width:100%"></progress><br>Entrenamiento del modelo: <b>${Math.min(a.n,10)}/10</b> días con irradiancia · modo <b>${a.learned ? 'aprendido' : 'referencia'}</b></p>
       <div class="row"><span>Salud estimada: <b>${a.health}/100</b></span><span>PR típico: <b>${f1(a.pr*100)}%</b></span><span>Alimenta: <b>${esc(ins.use)}</b></span><span>Días con irradiancia: <b>${rows(cur).filter(g => g.irr > .5).length}/${rows(cur).length}</b></span></div>
       <h2>Real vs. esperado por el modelo (kWh, últimos 30 días)</h2>${(() => { const R = rows(cur).slice(-30); return chart(R.map(g => g.date.slice(5)), [{n:'Real', v:R.map(g => g.kwh)}, {n:'Esperado', v:R.map(g => g.irr > .5 ? +a.ex(g).toFixed(2) : null)}]); })()}
       <h2>Hallazgos</h2>${a.F.slice(0,12).map(f => `<p><span class="tag ${f.s}">${f.s.toUpperCase()}</span> <b>${f.d}</b> – ${esc(f.t)}</p>`).join('') || '<p>✅ Sin comportamientos anormales.</p>'}
@@ -299,7 +316,7 @@ async function saveProj(){
   const tk = $('#etk').value.trim(), ch = $('#ech').value.trim();
   if (tk && !/^\d+:[\w-]+$/.test(tk)) return alert('El token del bot no tiene el formato esperado (ej. 123456789:ABC...).');
   if (ch && !/^-?\d+$/.test(ch)) return alert('El Chat ID debe ser un número (puede empezar con -).');
-  await run(sb.from('projects').update({use:$('#eu').value, use_detail:$('#ed2').value, inverter:$('#ei').value, description:$('#eds').value,
+  await run(sb.from('projects').update({location:$('#eloc').value, use:$('#eu').value, use_detail:$('#ed2').value, inverter:$('#ei').value, description:$('#eds').value,
     tariff:+$('#etf').value || 0, investment:+$('#ect').value || 0, tg_token:tk || null, tg_chat_id:ch || null}).eq('id', cur));
 }
 async function delProj(){
@@ -547,6 +564,7 @@ async function forecastCard(){
 /* ---------- irradiancia automática (Open-Meteo: histórico + últimos 92 días, sin clave) ---------- */
 const geoCache = {};
 async function geoFor(ins){
+  if (ins.lat != null && ins.lon != null) return {lat:ins.lat, lon:ins.lon, name:ins.loc || 'ubicación del proyecto (GPS)'};   // coordenadas exactas del proyecto
   const k = ins.loc || '';
   if (!geoCache[k]) {
     const g = await geocode(k);
@@ -581,6 +599,220 @@ async function fillIrr(){
   } catch (e) { toast('No se pudo obtener la irradiancia: ' + e.message); }
 }
 
+/* ---------- primeros pasos ---------- */
+function setupCard(ins, R){
+  const steps = [
+    ['Paneles cargados', ins.panels.length > 0, 'proy', 'Cargar paneles'],
+    ['Ubicación definida', !!(ins.loc || ins.lat != null), 'proy', 'Definir ubicación'],
+    ['Datos de generación', R.length > 0, 'gen', 'Cargar datos'],
+    ['Tarifa e inversión', ins.tariff > 0 && ins.cost > 0, 'proy', 'Completar ficha']];
+  if (steps.every(x => x[1])) return '';
+  return `<div class="card"><h2>🚀 Primeros pasos</h2>${steps.map(x => `<p>${x[1] ? '✅' : '⬜'} ${x[0]} ${x[1] ? '' : `<button onclick="tab='${x[2]}';render()">${x[3]}</button>`}</p>`).join('')}
+    <small class="mu">SolarIA no detecta la instalación por sí sola: necesita la ficha (paneles y ubicación) y los datos de generación, cargados a mano, por CSV del inversor o con un dispositivo en vivo.</small></div>`;
+}
+function detectLoc(){
+  if (!navigator.geolocation) return alert('Tu navegador no permite la geolocalización.');
+  navigator.geolocation.getCurrentPosition(async pos => {
+    // se redondea a 2 decimales (~1 km): alcanza para el clima y no guarda la dirección exacta
+    if (await run(sb.from('projects').update({latitude:+pos.coords.latitude.toFixed(2), longitude:+pos.coords.longitude.toFixed(2)}).eq('id', cur))) toast('📍 Ubicación del proyecto guardada por GPS');
+  }, err => alert('No se pudo obtener la ubicación: ' + err.message), {timeout:10000});
+}
+
+/* ---------- importar CSV del inversor ---------- */
+const norm = t => String(t).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const okd = r => { try { return iso(new Date(r + 'T12:00:00Z')) === r ? r : null; } catch (e) { return null; } };
+function parseDate(x){
+  let m = x.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/); if (m) return okd(`${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`);
+  m = x.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/); return m ? okd(`${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`) : null;
+}
+const num = x => { const v = parseFloat(String(x ?? '').replace(',', '.')); return isNaN(v) ? null : v; };
+async function importCSV(){
+  const f = $('#csvf') && $('#csvf').files && $('#csvf').files[0];
+  if (!f || !cur) return alert('Elegí un archivo CSV primero.');
+  if (f.size > 2e6) return alert('El archivo es demasiado grande (máximo 2 MB).');
+  const lines = (await f.text()).split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return alert('El CSV está vacío.');
+  const sep = (lines[0].match(/;/g) || []).length > (lines[0].match(/,/g) || []).length ? ';' : ',';
+  const H = lines[0].split(sep).map(h => norm(h.trim()));
+  let di = H.findIndex(h => /fecha|date/.test(h)); if (di < 0) di = H.findIndex(h => h === 'dia');
+  const ki = H.findIndex(h => /kwh|energia|energy|produccion/.test(h));
+  const pi = H.findIndex((h, j) => j !== ki && /pico|potencia|power|peak|^kw($|[^h])/.test(h)), ii = H.findIndex(h => /irrad|radiacion/.test(h));
+  if (di < 0 || ki < 0) return alert('No encontré las columnas «fecha» y «kWh». Descargá la plantilla para ver el formato.');
+  const out = {};
+  for (const l of lines.slice(1)) {
+    const c = l.split(sep), d = parseDate((c[di] || '').trim()), kwh = num(c[ki]);
+    if (d && kwh != null && kwh >= 0) out[d] = {project_id:cur, date:d, kwh, pk:pi >= 0 ? (num(c[pi]) || 0) : 0, irr:ii >= 0 ? (num(c[ii]) || 0) : 0};
+  }
+  const up = Object.values(out); if (!up.length) return alert('No encontré filas válidas (revisá el formato de fechas y números).');
+  toast(`Importando ${up.length} días…`);
+  for (let i = 0; i < up.length; i += 500) if (!(await run(sb.from('generation').upsert(up.slice(i, i + 500), {onConflict:'project_id,date'}), () => {}))) return;
+  render(); toast(`✅ ${up.length} días importados`);
+  if (up.some(g => !(g.irr > 0))) fillIrr();   // completa la irradiancia automáticamente
+}
+
+/* ---------- clima de la ubicación ---------- */
+const wxCache = {};
+const wmo = c => c === 0 ? '☀️' : c <= 2 ? '🌤️' : c === 3 ? '☁️' : c <= 48 ? '🌫️' : c <= 67 ? '🌧️' : c <= 77 ? '❄️' : c <= 82 ? '🌦️' : '⛈️';
+const cloudText = p => p <= 20 ? 'cielo despejado' : p <= 60 ? 'parcialmente nublado' : 'muy nublado';
+async function wxFor(ins){
+  const g = await geoFor(ins), key = g.lat + ',' + g.lon, c = wxCache[key];
+  if (c && Date.now() - c.t < 9e5) return c.v;
+  const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${g.lat}&longitude=${g.lon}&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,cloud_cover,wind_speed_10m,shortwave_radiation,is_day&hourly=shortwave_radiation&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,shortwave_radiation_sum&timezone=auto&forecast_days=7`);
+  if (!r.ok) throw new Error('Open-Meteo no respondió');
+  const j = await r.json(), v = {place:g.name, c:j.current, h:j.hourly, d:j.daily};
+  wxCache[key] = {t:Date.now(), v}; return v;
+}
+async function wxCard(){
+  const box = $('#wx'), ins = I(cur); if (!box) return;
+  if (!ins) return box.innerHTML = '<div class="card">Creá un proyecto primero.</div>';
+  try {
+    const w = await wxFor(ins); if ($('#wx') !== box) return;
+    const k = kwp(ins), a = analyze(cur), prv = a.pr || .8, c = w.c, d = w.d;
+    const i0 = Math.max(0, w.h.time.findIndex(t => t.slice(0,13) >= c.time.slice(0,13)));
+    const hrs = w.h.time.slice(i0, i0 + 24), pw = w.h.shortwave_radiation.slice(i0, i0 + 24).map(x => +(k * x/1000 * prv).toFixed(2));
+    const mine = rows(cur).filter(g => g.irr > .5).slice(-30), avg = mine.length ? mine.reduce((s,g) => s + g.irr, 0)/mine.length : null, tom = d.shortwave_radiation_sum[1]/3.6;
+    const notes = [`Ahora hay ${cloudText(c.cloud_cover)} (${c.cloud_cover}% de nubes).`];
+    if (!c.is_day) notes.push('Es de noche: no hay generación.'); else if (k > 0) notes.push(`Con esta radiación, tu instalación debería estar entregando unos ${f1(k*c.shortwave_radiation/1000*prv)} kW.`);
+    if (avg) { const df = (tom - avg)/avg*100; notes.push(`Mañana se espera ${Math.abs(df) < 5 ? 'un sol similar' : f1(Math.abs(df)) + '% ' + (df > 0 ? 'más' : 'menos') + ' de sol'} que en tu promedio reciente (${f1(tom)} vs. ${f1(avg)} kWh/m²).`); }
+    if (d.precipitation_sum[1] >= 1) notes.push('Mañana se esperan lluvias: ayudan a limpiar los paneles, pero bajan la generación ese día.');
+    const dia = t => new Date(t + 'T12:00').toLocaleDateString('es-AR', {weekday:'short', day:'numeric', month:'short'});
+    box.innerHTML = `<div class="card"><h2>${wmo(c.weather_code)} Clima en ${esc(w.place)}</h2><div class="grid">
+      <div class="kpi"><small>Temperatura</small><b>${f1(c.temperature_2m)} °C</b></div><div class="kpi"><small>Nubosidad</small><b>${c.cloud_cover}%</b></div>
+      <div class="kpi"><small>Radiación solar</small><b>${Math.round(c.shortwave_radiation)} W/m²</b></div><div class="kpi"><small>Viento</small><b>${f1(c.wind_speed_10m)} km/h</b></div>
+      <div class="kpi"><small>Lluvia</small><b>${c.precipitation} mm</b></div></div></div>
+    <div class="card"><h2>🤖 Lectura de SolarIA</h2>${notes.map(n => `<p>${esc(n)}</p>`).join('')}</div>
+    <div class="card"><h2>Potencia esperada – próximas 24 h (kW)</h2>${chart(hrs.map(t => t.slice(11,16)), [{n:'kW esperados', v:pw}])}<small class="mu">Radiación pronosticada × ${f1(k)} kWp × PR ${f1(prv*100)}%${a.pr ? ' (mediana histórica)' : ' (valor por defecto)'}. Datos: Open-Meteo.</small></div>
+    <div class="card sc"><h2>Próximos 7 días</h2><table><tr><th>Día</th><th></th><th>Mín / Máx</th><th>Irradiancia</th><th>Generación esperada</th><th>Lluvia</th></tr>
+    ${d.time.map((t,i) => `<tr><td>${esc(dia(t))}</td><td>${wmo(d.weather_code[i])}</td><td>${Math.round(d.temperature_2m_min[i])}° / ${Math.round(d.temperature_2m_max[i])}°</td><td>${f1(d.shortwave_radiation_sum[i]/3.6)} kWh/m²</td><td>${k > 0 ? f1(d.shortwave_radiation_sum[i]/3.6*k*prv) + ' kWh' : '–'}</td><td>${f1(d.precipitation_sum[i])} mm</td></tr>`).join('')}</table></div>`;
+    drawCharts();
+  } catch (e) { if ($('#wx') === box) box.innerHTML = `<div class="card"><h2>🌦️ Clima</h2><p class="mu">No se pudo obtener el clima: ${esc(e.message)}</p></div>`; }
+}
+
+/* ---------- asistente: motor local de intenciones (+ LLM opcional por Edge Function) ---------- */
+const CHIPS = ['¿Cuánto generé este mes?', '¿Cuánto voy a generar mañana?', '¿Cómo está el clima?', '¿Mi sistema funciona bien?', '¿Cuánto ahorré?', '¿Cuándo recupero la inversión?', '¿Por qué generé poco ayer?', '¿Cuándo conviene limpiar los paneles?'];
+let chatLog = [];
+const has = (q, ...w) => w.some(x => q.includes(x));
+const llmOn = () => typeof ENABLE_LLM !== 'undefined' && ENABLE_LLM && realSb && !localMode;
+const dAgo = n => iso(new Date(Date.now() - n*864e5));
+const A = (t, src = 'local') => ({t, src});
+const fmt = t => esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
+function chatHTML(){
+  return chatLog.map(m => `<div class="msg ${m.r}">${fmt(m.t)}${m.src === 'llm' ? '<br><small class="mu">🧠 Respuesta generada con un modelo de lenguaje: verificá los datos importantes.</small>' : ''}</div>`).join('');
+}
+function chatPaint(){ const b = $('#chatlog'); if (b) { b.innerHTML = chatHTML(); b.scrollTop = b.scrollHeight; } }
+async function sendChat(txt){
+  const inp = $('#chatq'), raw = String(txt ?? (inp ? inp.value : '')).trim(); if (!raw) return;
+  if (inp) inp.value = '';
+  chatLog.push({r:'u', t:raw}, {r:'b', t:'Pensando…'}); chatPaint();
+  let msg; try { msg = await answer(raw); } catch (e) { msg = A('No pude consultar los datos ahora: ' + e.message); }
+  chatLog.pop(); chatLog.push({r:'b', ...msg}); chatPaint();
+}
+function period(q, R){
+  const sel = (label, f) => ({label, rows:R.filter(g => f(g.date))}), m = q.match(/ultim[oa]s?\s+(\d+)\s+dias/);
+  if (has(q, 'ayer')) return sel('el día de ayer', d => d === dAgo(1));
+  if (has(q, 'hoy')) return sel('el día de hoy', d => d === dAgo(0));
+  if (m) { const from = dAgo(+m[1] - 1); return sel(`los últimos ${m[1]} días`, d => d >= from); }
+  if (has(q, 'semana')) { const from = dAgo(6); return sel('los últimos 7 días', d => d >= from); }
+  if (has(q, 'mes pasado', 'mes anterior')) { const t = new Date(), p = iso(new Date(t.getFullYear(), t.getMonth() - 1, 15)).slice(0,7); return sel('el mes pasado', d => d.startsWith(p)); }
+  if (has(q, 'este mes', 'del mes', 'mensual')) { const p = dAgo(0).slice(0,7); return sel('este mes', d => d.startsWith(p)); }
+  if (has(q, 'total', 'historico', 'siempre', 'acumulad')) return sel('todo el historial', () => true);
+  const from = dAgo(29); return sel('los últimos 30 días', d => d >= from);
+}
+const sumKwh = r => r.reduce((s,g) => s + g.kwh, 0);
+async function tomorrowEst(ins){
+  const f = await forecastFor(ins), a = analyze(cur), prv = a.pr || .8, d = f.days[1];
+  return {e:d.mj/3.6*kwp(ins)*prv, irr:d.mj/3.6, prv, learned:!!a.pr, place:f.place, date:d.date};
+}
+function whyLow(q, R, a){
+  const g = has(q, 'ayer') ? R.find(x => x.date === dAgo(1)) : R[R.length - 1];
+  if (!g) return 'No tengo datos de generación de ese día, así que no puedo explicar qué pasó.';
+  if (!(g.irr > 0) || a.pr == null) return `El ${g.date} generaste ${f1(g.kwh)} kWh, pero no tengo la irradiancia de ese día (ni paneles cargados) para saber cuánto se esperaba. Cargá la irradiancia o usá «Completar irradiancia faltante» en Generación y te explico la causa.`;
+  const exp = a.ex(g), ratio = g.kwh/exp, mine = R.filter(x => x.irr > .5).slice(-30), avg = mine.reduce((s,x) => s + x.irr, 0)/mine.length, rel = g.irr/avg;
+  const base = `El ${g.date} generaste **${f1(g.kwh)} kWh**; con la irradiancia de ese día (${g.irr} kWh/m²) se esperaban ${f1(exp)} kWh, o sea rindió el **${f1(ratio*100)}%** de lo esperado.`;
+  if (ratio >= .85) return base + (rel < .85 ? ` La causa principal fue el clima: ese día tuvo ${f1((1-rel)*100)}% menos de sol que tu promedio.` : ' Está dentro de lo normal.');
+  return base + ' Rindió menos de lo esperado aun considerando el clima, así que no se explica solo por el tiempo. Posibles causas: suciedad, sombras, falla del inversor o corte de red. Revisá Análisis IA.';
+}
+const HELP = 'Puedo responder con los datos de tu proyecto sobre:\n• **Producción**: «¿cuánto generé esta semana / este mes / ayer?»\n• **Ahorro y retorno**: «¿cuánto ahorré?», «¿cuándo recupero la inversión?»\n• **Mañana**: «¿cuánto voy a generar mañana?»\n• **Clima**: «¿cómo está el clima?»\n• **Estado**: «¿mi sistema funciona bien?», «¿por qué generé poco ayer?»\n• **Mantenimiento**, **especificaciones** del sistema y **cómo funciona el modelo**.\nSi me preguntás algo fuera de esa lista, te voy a decir que todavía no estoy entrenada para eso.';
+async function answer(raw){
+  const q = norm(raw), ins = I(cur);
+  if (/^(hola|buenas|buen dia|buenos dias|que tal)\b/.test(q) && q.length < 30) return A('¡Hola! 👋 Preguntame por tu producción, el ahorro, el clima, el pronóstico de mañana o el estado de tu sistema.');
+  if (has(q, 'ayuda', 'que podes', 'que sabes', 'que puedes', 'que haces')) return A(HELP);
+  if (!ins) return A('Primero creá un proyecto en la pestaña Proyectos y después te ayudo con sus datos.');
+  const R = rows(cur), a = analyze(cur), k = kwp(ins);
+  if (has(q, 'por que', 'porque', 'motivo') && has(q, 'poco', 'menos', 'baj', 'cay', 'mal', 'nada')) return A(whyLow(q, R, a));
+  if (has(q, 'mejor dia', 'peor dia')) {
+    if (!R.length) return A('Todavía no cargaste datos de generación.');
+    const best = R.reduce((x,y) => y.kwh > x.kwh ? y : x), worst = R.reduce((x,y) => y.kwh < x.kwh ? y : x);
+    return A(`Tu mejor día fue el **${best.date}** con ${f1(best.kwh)} kWh y el peor el **${worst.date}** con ${f1(worst.kwh)} kWh (sobre ${R.length} días registrados).`);
+  }
+  if (has(q, 'compar', ' vs ', 'versus')) {
+    const t = new Date(), mA = dAgo(0).slice(0,7), mB = iso(new Date(t.getFullYear(), t.getMonth() - 1, 15)).slice(0,7);
+    const ra = R.filter(g => g.date.startsWith(mA)), rb = R.filter(g => g.date.startsWith(mB));
+    if (!ra.length || !rb.length) return A(`Para comparar necesito datos de este mes y del anterior. Tengo ${ra.length} día(s) de ${mA} y ${rb.length} de ${mB}.`);
+    const pa = sumKwh(ra)/ra.length, pb = sumKwh(rb)/rb.length, df = (pa - pb)/pb*100;
+    return A(`Promedio diario de este mes: **${f1(pa)} kWh** (${ra.length} días) vs. el mes pasado: **${f1(pb)} kWh** (${rb.length} días): ${df >= 0 ? '+' : ''}${f1(df)}%. Comparo promedios diarios porque los meses no tienen los mismos días cargados.`);
+  }
+  if (has(q, 'retorno', 'payback', 'amortiz', 'recuper', 'se paga', 'rentab')) {
+    const l30 = R.filter(g => g.date >= dAgo(29));
+    if (!(ins.tariff > 0 && ins.cost > 0)) return A('Para estimar el retorno necesito la tarifa eléctrica y la inversión inicial. Cargalas en Proyectos → ficha del proyecto.');
+    if (!l30.length) return A('No tengo generación de los últimos 30 días para proyectar el ahorro anual. Cargá datos recientes.');
+    const anual = sumKwh(l30)/l30.length*365*ins.tariff, m = Math.round(ins.cost/anual*12), rec = sumKwh(R)*ins.tariff;
+    return A(`Con tu generación de los últimos 30 días, el ahorro anual proyectado es ${money(anual)} y la inversión se recupera en unos **${Math.floor(m/12)} años y ${m % 12} meses**. Hasta hoy recuperaste ${money(rec)} (${f1(Math.min(100, rec/ins.cost*100))}%). Es una estimación: no incluye estacionalidad ni cambios de tarifa.`);
+  }
+  if (has(q, 'ahorr', 'plata', 'dinero', 'factura', 'pesos', 'gane')) {
+    if (!(ins.tariff > 0)) return A('Para calcular el ahorro necesito la tarifa eléctrica ($/kWh). Cargala en Proyectos → ficha del proyecto.');
+    const p = period(q, R); if (!p.rows.length) return A(`No tengo registros de generación de ${p.label}.`);
+    return A(`En ${p.label} generaste ${f1(sumKwh(p.rows))} kWh, lo que equivale a un ahorro de **${money(sumKwh(p.rows)*ins.tariff)}** (tarifa de $${ins.tariff}/kWh).`);
+  }
+  if (has(q, 'manana', 'pronostic', 'predic', 'voy a generar', 'generare', 'proyeccion')) {
+    if (!(k > 0)) return A('Para proyectar necesito los paneles cargados en la ficha del proyecto.');
+    const t = await tomorrowEst(ins);
+    return A(`Mañana (${t.date}) se espera una irradiancia de ${f1(t.irr)} kWh/m² en ${t.place}, así que generarías unos **${f1(t.e)} kWh**${ins.tariff > 0 ? ` (≈ ${money(t.e*ins.tariff)})` : ''}. Uso un PR de ${f1(t.prv*100)}% ${t.learned ? '(mediana histórica de tu instalación)' : '(valor por defecto: todavía no tengo datos propios suficientes)'}.`);
+  }
+  if (has(q, 'clima', 'nublad', 'temperatura', 'llueve', 'lluvia', 'viento', 'soleado', 'radiacion', 'irradiancia', 'que tiempo', 'el tiempo')) {
+    const w = await wxFor(ins), c = w.c;
+    return A(`En **${w.place}** ahora hay ${f1(c.temperature_2m)} °C, ${cloudText(c.cloud_cover)} (${c.cloud_cover}% de nubes), radiación de ${Math.round(c.shortwave_radiation)} W/m² y viento de ${f1(c.wind_speed_10m)} km/h.${c.is_day ? '' : ' Es de noche, así que no hay generación.'} Mañana: ${f1(w.d.shortwave_radiation_sum[1]/3.6)} kWh/m² de irradiancia esperada y ${f1(w.d.precipitation_sum[1])} mm de lluvia. En la pestaña Clima está el detalle.`);
+  }
+  if (has(q, 'mantenimiento', 'limpi', 'inspecc', 'recomend', 'que hago', 'revisar')) {
+    const lm = db.ev.filter(e => e.inst == cur && e.type === 'Mantenimiento').map(e => e.date).sort().pop();
+    if (a.pr == null) return A('Todavía no tengo datos suficientes para recomendarte algo específico. Regla general: inspección preventiva cada 6 meses y limpieza cuando notes una caída de producción.' + (lm ? ` Tu último mantenimiento registrado fue el ${lm}.` : ' No hay mantenimientos registrados.'));
+    return A('Recomendaciones según tus datos:\n' + (a.rec.map(r => '• ' + r).join('\n') || '• Continuar con el monitoreo habitual.') + (lm ? `\nÚltimo mantenimiento registrado: ${lm}.` : '\nNo hay mantenimientos registrados.'));
+  }
+  if (has(q, 'falla', 'anomal', 'problema', 'funciona', 'anda bien', 'esta bien', 'salud', 'estado', 'error', 'alerta')) {
+    if (a.pr == null) return A(a.noPanels ? 'Todavía no puedo evaluar el estado: cargá los paneles del proyecto.' : 'Todavía no puedo evaluar el estado: necesito al menos 1 día con generación e irradiancia.');
+    const al = a.F.filter(f => f.s === 'alta'), me = a.F.filter(f => f.s === 'media');
+    return A(`Salud estimada: **${a.health}/100**. Detecté ${al.length} alerta(s) graves y ${me.length} moderadas.` + (a.F.filter(f => f.s !== 'info').slice(0,3).map(f => `\n• ${f.d}: ${f.t}`).join('')) +
+      (a.learned ? '' : `\n\nOjo: todavía comparo contra una referencia teórica (${a.n}/10 días con irradiancia). Con 10 días mi modelo aprende el comportamiento propio de tu instalación y el diagnóstico gana precisión.`));
+  }
+  if (has(q, 'panel', 'kwp', 'potencia instalada', 'inversor', 'especificac', 'ficha', 'alimenta', 'ubicacion')) {
+    return A(`**${ins.name}**: ${f1(k)} kWp (${nPan(ins)} paneles). ${ins.panels.map(p => `${p.qty}× ${p.brand} ${p.model} ${p.wp} Wp (${p.type})`).join('; ') || 'Todavía no cargaste paneles.'} Inversor: ${ins.inv || 'sin dato'}. Alimenta: ${ins.use}${ins.useDetail ? ' (' + ins.useDetail + ')' : ''}. Ubicación: ${ins.loc || 'sin definir'}.`);
+  }
+  if (has(q, 'entrena', 'aprend', 'modelo', 'como funciona', 'inteligencia', 'confiable', 'cuantos dias', '10 dias')) {
+    return A(`Mi análisis tiene dos etapas. Con menos de 10 días con irradiancia comparo contra una referencia teórica (kWp × irradiancia × 0,80). Con 10 días o más aprendo un modelo propio de tu instalación (regresión robusta) y detecto lo que se aparta de ese comportamiento. Ahora tengo **${a.n || 0}/10** días utilizables: modo **${a.learned ? 'aprendido' : 'referencia'}**. No soy un modelo de lenguaje: respondo con tus datos y reglas, y cuando algo no lo sé, te lo digo.`);
+  }
+  if (has(q, 'gener', 'produj', 'produccion', 'energia', 'kwh')) {
+    const p = period(q, R);
+    if (!p.rows.length) return A(`No tengo registros de generación de ${p.label}.` + (R.length ? ` Tu último dato es del ${R[R.length-1].date}.` : ' Todavía no cargaste datos: andá a Generación.'));
+    const tot = sumKwh(p.rows);
+    return A(`En ${p.label} generaste **${f1(tot)} kWh** (${p.rows.length} día(s) con datos, promedio ${f1(tot/p.rows.length)} kWh/día)${ins.tariff > 0 ? `, equivalente a ${money(tot*ins.tariff)} de ahorro` : ''}.`);
+  }
+  if (llmOn()) {                                   // la pregunta no es de las que conozco: se consulta al modelo de lenguaje (Edge Function)
+    try { return A(await askLLM(raw), 'llm'); } catch (e) { console.warn('LLM:', e.message); }
+  }
+  return A('Todavía no soy capaz de entender esa consulta: mi modelo no está entrenado para ese tema.\n\nPuedo ayudarte con producción y ahorro, retorno de la inversión, pronóstico de mañana, clima, estado y anomalías, mantenimiento, especificaciones del sistema y cómo funciona el modelo. Probá reformular la pregunta o usá los botones de ejemplo.' + (llmOn() ? '' : '\n\n(El modo de lenguaje avanzado no está activado en este proyecto.)'));
+}
+function llmContext(){
+  const ins = I(cur), a = analyze(cur), w = Object.values(wxCache)[0];
+  return {proyecto:{nombre:ins.name, ubicacion:ins.loc, kWp:+f1(kwp(ins)), paneles:ins.panels.map(p => `${p.qty}x ${p.brand} ${p.model} ${p.wp}Wp`), uso:ins.use, tarifa:ins.tariff, inversion:ins.cost},
+    ultimos_dias:rows(cur).slice(-30).map(g => ({fecha:g.date, kwh:g.kwh, irradiancia:g.irr})), hallazgos:a.F.slice(0,8).map(f => ({fecha:f.d, gravedad:f.s, texto:f.t})),
+    modelo:{aprendido:a.learned, dias_con_irradiancia:a.n}, clima:w ? {actual:w.v.c, diario:w.v.d} : null};
+}
+async function askLLM(question){
+  const {data, error} = await sb.functions.invoke('ask-solaria', {body:{question, context:llmContext()}});
+  if (error || !data || data.error) throw new Error((error && error.message) || (data && data.error) || 'sin respuesta');
+  return data.answer;
+}
+
 /* ---------- arranque ---------- */
 function render(){
   if (!user) {
@@ -601,6 +833,8 @@ function render(){
   $('#app').innerHTML = V[tab]();
   if (tab === 'live') liveStart(); else liveStop();
   if (tab === 'panel' || tab === 'ia') forecastCard();
+  if (tab === 'clima') wxCard();
+  if (tab === 'chat') chatPaint();
   drawCharts();
 }
 function boot(){

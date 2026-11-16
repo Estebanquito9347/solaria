@@ -14,6 +14,8 @@ create table public.projects (
   investment  numeric default 0,   -- costo inicial de la instalación ($)
   tg_token    text,                -- token del bot de Telegram (opcional)
   tg_chat_id  text,                -- Chat ID de Telegram (opcional)
+  latitude    numeric,             -- coordenadas del proyecto (GPS, opcional)
+  longitude   numeric,
   created_at  timestamptz default now()
 );
 
