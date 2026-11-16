@@ -5,10 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SolarIA</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 </head>
 <body>
   <header id="top" hidden>
-    <h1>☀️ <span>SolarIA</span></h1>
+    <div class="brand">
+      <h1><span class="brand-mark">☀</span> <span>SolarIA</span></h1>
+      <p>Monitoreo inteligente de energía solar</p>
+    </div>
     <div class="row">
       <label>Proyecto<select id="cur"></select></label>
       <span id="who"></span>
@@ -19,6 +23,7 @@
   <main id="app"></main>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="config.js"></script>
   <script src="app.js"></script>
 </body>

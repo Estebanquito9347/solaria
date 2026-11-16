@@ -2,6 +2,7 @@
 const TABS = [['panel','Panel'],['live','En vivo'],['clima','Clima'],['proy','Proyectos'],['gen','Generación'],['cmp','Comparar'],['ev','Fallas y mant.'],['ia','Análisis IA'],['chat','Asistente'],['rep','Reportes']];
 const USES = ['Vivienda','Industria / taller','Bombeo / riego','Comercio','Alumbrado','Otro'];
 let tab = 'panel', cur = null, user = null, db = null;
+const locationMaps = [];
 
 /* ---------- utilidades ---------- */
 const $ = s => document.querySelector(s);
@@ -208,8 +209,11 @@ function fichaProyecto(i){
     <div class="row"><label>¿A qué alimenta?<select id="eu">${USES.map(u => `<option ${u == i.use ? 'selected' : ''}>${u}</option>`).join('')}</select></label>
     <label>Detalle (equipos/cargas)<input id="ed2" value="${esc(i.useDetail)}"></label>
     <label>Inversor<input id="ei" value="${esc(i.inv)}"></label></div>
-    <div class="row"><label>Ubicación (Ciudad, Provincia)<input id="eloc" value="${esc(i.loc)}"></label><button onclick="detectLoc()">📍 Usar mi ubicación (GPS)</button>
-    <small class="mu">${i.lat != null ? 'Coordenadas guardadas: ' + i.lat + ', ' + i.lon : 'Sin coordenadas: se busca por el texto de ubicación'}</small></div>
+    <label>Ubicación del proyecto — hacé clic en el mapa o arrastrá el marcador</label>
+    <div id="editMap" role="application" aria-label="Mapa para seleccionar la ubicación del proyecto"></div>
+    <input id="editLat" type="hidden" value="${i.lat ?? ''}"><input id="editLon" type="hidden" value="${i.lon ?? ''}">
+    <small id="editLocationStatus" class="mu">${i.lat != null ? 'Coordenadas guardadas: ' + i.lat + ', ' + i.lon : 'Seleccioná un punto en el mapa para guardar la ubicación.'}</small>
+    <div class="row"><label>Referencia (opcional, por ejemplo ciudad o dirección)<input id="eloc" value="${esc(i.loc)}"></label><button onclick="detectLoc()">📍 Usar mi ubicación (GPS)</button></div>
     <div class="row"><label>Tarifa eléctrica ($/kWh)<input id="etf" type="number" step="0.01" min="0" value="${i.tariff || ''}"></label>
     <label>Inversión inicial ($)<input id="ect" type="number" step="1" min="0" value="${i.cost || ''}"></label></div>
     <div class="row"><label>Telegram – token del bot (opcional)<input id="etk" type="password" autocomplete="off" value="${esc(i.tgToken)}"></label>
@@ -238,7 +242,11 @@ const V = {
     if (!ins) return '<div class="card">Todavía no tenés proyectos. Andá a <b>Proyectos</b> para crear uno (o cargá datos de ejemplo en <b>Generación</b>).</div>';
     const R = rows(cur), l30 = R.slice(-30), tot = l30.reduce((s,g) => s+g.kwh, 0), a = analyze(cur);
     const an = a.F.filter(f => f.s != 'info'), dates = new Set(an.map(f => f.d));
-    return `${setupCard(ins, R)}<div class="card"><b>${esc(ins.name)}</b> <span class="mu">· ${esc(ins.loc)} · Alimenta: ${esc(ins.use)}</span></div>
+    return `${setupCard(ins, R)}<section class="dashboard-hero">
+      <div><span class="eyebrow">RESUMEN DE INSTALACIÓN</span><h2>${esc(ins.name)}</h2>
+      <p>${esc(ins.loc || 'Ubicación sin definir')} <span aria-hidden="true">·</span> ${esc(ins.use)}</p></div>
+      <div class="hero-status"><span class="status-dot"></span> Proyecto activo</div>
+    </section>
     <div class="grid"><div class="card kpi"><small>Potencia instalada</small><b>${f1(kwp(ins))} kWp</b></div>
     <div class="card kpi"><small>Energía últimos 30 días</small><b>${f1(tot)} kWh</b></div>
     <div class="card kpi"><small>Promedio diario</small><b>${f1(tot/(l30.length||1))} kWh</b></div>
@@ -247,13 +255,18 @@ const V = {
     <div class="card kpi"><small>Salud estimada</small><b>${a.health ?? '–'}/100</b></div></div>
     ${econ(ins, R, l30)}
     <div id="fc"></div>
-    <div class="card"><h2>Energía diaria (kWh) – últimos 30 días</h2>${chart(l30.map(g => g.date.slice(5)), [{n:'kWh', v:l30.map(g => g.kwh)}], 1, l30.map(g => dates.has(g.date)))}<small class="mu">Barras rojas: días anómalos según el análisis IA.</small></div>
-    <div class="card"><h2>Potencia pico diaria (kW)</h2>${chart(l30.map(g => g.date.slice(5)), [{n:'kW', v:l30.map(g => g.pk)}])}</div>`;
+    <div class="card chart-card"><div class="section-heading"><div><span class="eyebrow">PRODUCCIÓN</span><h2>Energía diaria</h2></div><span class="unit-chip">kWh · 30 días</span></div>${chart(l30.map(g => g.date.slice(5)), [{n:'kWh', v:l30.map(g => g.kwh)}], 1, l30.map(g => dates.has(g.date)))}<small class="mu">Barras rojas: días anómalos según el análisis IA.</small></div>
+    <div class="card chart-card"><div class="section-heading"><div><span class="eyebrow">RENDIMIENTO</span><h2>Potencia pico diaria</h2></div><span class="unit-chip">kW</span></div>${chart(l30.map(g => g.date.slice(5)), [{n:'kW', v:l30.map(g => g.pk)}])}</div>`;
   },
   proy(){
     return `<div class="card"><h2>Nuevo proyecto / sector de paneles</h2>
-      <div class="row"><label>Nombre<input id="n"></label><label>Ubicación<input id="l"></label><label>Puesta en marcha<input id="d" type="date"></label>
+      <div class="row"><label>Nombre<input id="n"></label><label>Puesta en marcha<input id="d" type="date"></label>
       <label>¿A qué alimenta?<select id="us">${USES.map(u => `<option>${u}</option>`).join('')}</select></label></div>
+      <label>Elegí la ubicación del proyecto en el mapa</label>
+      <div id="newMap" role="application" aria-label="Mapa para elegir la ubicación del proyecto"></div>
+      <input id="newLat" type="hidden"><input id="newLon" type="hidden">
+      <small id="newLocationStatus" class="mu">Hacé clic en el mapa para marcar la ubicación.</small>
+      <div class="row"><label>Referencia opcional (ciudad o dirección)<input id="l"></label></div>
       <div class="row"><label>Tarifa eléctrica ($/kWh)<input id="tf" type="number" step="0.01" min="0"></label><label>Inversión inicial ($)<input id="ct" type="number" step="1" min="0"></label></div>
       <label>Descripción / utilidad<textarea id="ds" rows="2"></textarea></label>
       <div class="row" style="margin-top:8px"><button class="pri" onclick="addProj()">Crear proyecto</button></div></div>
@@ -309,14 +322,20 @@ const V = {
 /* ---------- acciones (cada una escribe en Supabase y recarga) ---------- */
 async function addProj(){
   const n = $('#n').value.trim(); if (!n) return alert('Ingresá un nombre para el proyecto.');
-  await run(sb.from('projects').insert({name:n, location:$('#l').value, start_date:$('#d').value || null, use:$('#us').value, description:$('#ds').value, tariff:+$('#tf').value || 0, investment:+$('#ct').value || 0}),
+  const point = selectedMapPoint('newLat', 'newLon');
+  if (!point) return alert('Seleccioná la ubicación del proyecto en el mapa.');
+  const location = $('#l').value.trim() || `${point.latitude}, ${point.longitude}`;
+  await run(sb.from('projects').insert({name:n, location, latitude:point.latitude, longitude:point.longitude, start_date:$('#d').value || null, use:$('#us').value, description:$('#ds').value, tariff:+$('#tf').value || 0, investment:+$('#ct').value || 0}),
     () => { cur = db.inst[db.inst.length-1].id; boot(); });
 }
 async function saveProj(){
   const tk = $('#etk').value.trim(), ch = $('#ech').value.trim();
   if (tk && !/^\d+:[\w-]+$/.test(tk)) return alert('El token del bot no tiene el formato esperado (ej. 123456789:ABC...).');
   if (ch && !/^-?\d+$/.test(ch)) return alert('El Chat ID debe ser un número (puede empezar con -).');
-  await run(sb.from('projects').update({location:$('#eloc').value, use:$('#eu').value, use_detail:$('#ed2').value, inverter:$('#ei').value, description:$('#eds').value,
+  const point = selectedMapPoint('editLat', 'editLon');
+  if (!point) return alert('Seleccioná la ubicación del proyecto en el mapa.');
+  const location = $('#eloc').value.trim() || `${point.latitude}, ${point.longitude}`;
+  await run(sb.from('projects').update({location, latitude:point.latitude, longitude:point.longitude, use:$('#eu').value, use_detail:$('#ed2').value, inverter:$('#ei').value, description:$('#eds').value,
     tariff:+$('#etf').value || 0, investment:+$('#ect').value || 0, tg_token:tk || null, tg_chat_id:ch || null}).eq('id', cur));
 }
 async function delProj(){
@@ -618,6 +637,60 @@ function detectLoc(){
   }, err => alert('No se pudo obtener la ubicación: ' + err.message), {timeout:10000});
 }
 
+function selectedMapPoint(latId, lonId){
+  const lat = $(`#${latId}`).value, lon = $(`#${lonId}`).value;
+  if (lat === '' || lon === '') return null;
+  const latitude = Number(lat), longitude = Number(lon);
+  return Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180
+    ? {latitude, longitude} : null;
+}
+function clearLocationMaps(){
+  while (locationMaps.length) locationMaps.pop().remove();
+}
+function initLocationMap(mapId, latId, lonId, statusId, location, lat, lon){
+  const container = document.getElementById(mapId), status = document.getElementById(statusId);
+  if (!container || !status) return;
+  if (!window.L) {
+    status.textContent = 'No se pudo cargar el mapa. Revisá tu conexión e intentá recargar.';
+    return;
+  }
+  const hasPoint = lat != null && lon != null && Number.isFinite(+lat) && Number.isFinite(+lon);
+  const map = L.map(container).setView(hasPoint ? [+lat, +lon] : [-34.6, -58.4], hasPoint ? 15 : 5);
+  locationMaps.push(map);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom:19, attribution:'&copy; OpenStreetMap'
+  }).addTo(map);
+  let marker = null;
+  const selectPoint = point => {
+    if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng) || Math.abs(point.lat) > 90 || Math.abs(point.lng) > 180) return;
+    const latitude = +point.lat.toFixed(6), longitude = +point.lng.toFixed(6);
+    if (marker) marker.setLatLng([latitude, longitude]);
+    else {
+      marker = L.marker([latitude, longitude], {draggable:true}).addTo(map);
+      marker.on('dragend', () => selectPoint(marker.getLatLng()));
+    }
+    $(`#${latId}`).value = latitude;
+    $(`#${lonId}`).value = longitude;
+    status.textContent = `Punto seleccionado: ${latitude}, ${longitude}`;
+  };
+  if (hasPoint) selectPoint({lat:+lat, lng:+lon});
+  map.on('click', event => selectPoint(event.latlng));
+  if (!hasPoint && location) {
+    geocode(location).then(point => {
+      if (!point || !container.isConnected) return;
+      map.setView([point.lat, point.lon], 14);
+      selectPoint({lat:point.lat, lng:point.lon});
+    }).catch(error => {
+      if (container.isConnected) status.textContent = `No se pudo ubicar "${location}" automáticamente (${error.message}). Elegí el punto en el mapa.`;
+    });
+  }
+}
+function initLocationMaps(){
+  const ins = I(cur);
+  initLocationMap('newMap', 'newLat', 'newLon', 'newLocationStatus', '', null, null);
+  if (ins) initLocationMap('editMap', 'editLat', 'editLon', 'editLocationStatus', ins.loc, ins.lat, ins.lon);
+}
+
 /* ---------- importar CSV del inversor ---------- */
 const norm = t => String(t).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 const okd = r => { try { return iso(new Date(r + 'T12:00:00Z')) === r ? r : null; } catch (e) { return null; } };
@@ -830,7 +903,9 @@ function render(){
   }
   $('#top').hidden = $('#nav').hidden = false;
   $('#nav').innerHTML = TABS.map(([k,l]) => `<button class="${k == tab ? 'on' : ''}" onclick="tab='${k}';render()">${l}</button>`).join('');
+  clearLocationMaps();
   $('#app').innerHTML = V[tab]();
+  if (tab === 'proy') initLocationMaps();
   if (tab === 'live') liveStart(); else liveStop();
   if (tab === 'panel' || tab === 'ia') forecastCard();
   if (tab === 'clima') wxCard();
