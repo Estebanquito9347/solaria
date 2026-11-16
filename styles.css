@@ -210,6 +210,11 @@ svg text { fill: var(--mu); font-size: 11px; }
 .msg.u { margin-left: auto; border-color: var(--ac); background: var(--ac-soft); color: var(--tx); }
 .device-key-card { border-color: color-mix(in srgb, var(--ac) 55%, var(--bd)); background: color-mix(in srgb, var(--ac-soft) 42%, var(--card)); }
 .device-key-value { display: block; margin: 12px 0; padding: 12px; overflow-wrap: anywhere; border: 1px solid var(--bd); border-radius: 9px; background: var(--bg); color: var(--tx); user-select: all; }
+.sim-switch { flex-direction: row; align-items: center; gap: 9px; margin: 8px 0; color: var(--tx); cursor: pointer; }
+.sim-switch input { width: 17px; height: 17px; margin: 0; }
+.sim-status { display: block; min-height: 1.5em; margin-top: 8px; color: var(--mu); }
+.sim-status.success { color: var(--ok); }
+.sim-status.error { color: var(--bad); }
 progress { width: 100%; height: 10px; accent-color: var(--c2); }
 @media print {
   nav, header, .noprint { display: none !important; }

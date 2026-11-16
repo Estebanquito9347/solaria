@@ -421,13 +421,36 @@ function genRep(){
 /* ---------- estado en vivo (lecturas de dispositivos) ---------- */
 let lv = {ch:null, t:null};
 let pendingDeviceKey = null;
-function liveStop(){ if (lv.ch) { sb.removeChannel(lv.ch); lv.ch = null; } clearInterval(lv.t); }
+const sim = {key:'', power:'1.8', energy:'12.45', auto:false, timer:null, sending:false, controller:null, requestId:0, message:'', messageType:''};
+function liveStop(){
+  if (lv.ch) { sb.removeChannel(lv.ch); lv.ch = null; }
+  clearInterval(lv.t);
+  clearInterval(sim.timer);
+  sim.timer = null;
+  sim.auto = false;
+  pendingDeviceKey = null;
+  sim.key = '';
+  sim.requestId++;
+  if (sim.controller) sim.controller.abort();
+  sim.controller = null;
+  sim.sending = false;
+}
 function deviceKeyCard(){
   if (!pendingDeviceKey) return '';
   return `<div class="card device-key-card"><h2>Guardá la clave del dispositivo</h2>
     <p>Se muestra solo ahora. Copiala y guardala en el ESP32; después no se puede volver a consultar.</p>
     <code class="device-key-value">${esc(pendingDeviceKey)}</code>
     <div class="row"><button class="pri" onclick="copyDeviceKey()">Copiar clave</button><button onclick="dismissDeviceKey()">Ya la guardé</button></div></div>`;
+}
+function simulatorCard(){
+  return `<div class="card"><h2>Probar envío de lecturas</h2>
+    <p class="mu">Simula un ESP32 usando la clave del dispositivo. Los datos se enviarán a Supabase y aparecerán en este panel.</p>
+    <div class="row"><label>Clave individual del dispositivo<input id="simKey" type="password" autocomplete="off" spellcheck="false" placeholder="Pegá la clave que copiaste" value="${esc(sim.key)}" oninput="sim.key=this.value"></label></div>
+    <div class="row"><label>Potencia (kW)<input id="simPower" type="number" min="0" max="100000" step="0.01" value="${esc(sim.power)}" oninput="sim.power=this.value"></label>
+    <label>Energía acumulada hoy (kWh)<input id="simEnergy" type="number" min="0" max="1000000000" step="0.01" value="${esc(sim.energy)}" oninput="sim.energy=this.value"></label>
+    <button class="pri" onclick="sendSimReading()">Enviar lectura ahora</button></div>
+    <label class="sim-switch"><input id="simAuto" type="checkbox" ${sim.auto ? 'checked' : ''} onchange="setSimAuto(this.checked)"> Envío automático cada 10 segundos</label>
+    <small id="simStatus" class="sim-status ${esc(sim.messageType)}" role="status" aria-live="polite">${esc(sim.message || 'La simulación usa la clave pública anon del proyecto y la clave individual pegada arriba.')}</small></div>`;
 }
 async function liveStart(){
   liveStop(); if (!cur) return $('#live').innerHTML = '<div class="card">Creá un proyecto primero.</div>';
@@ -453,7 +476,7 @@ async function liveLoad(){
   else if (L.power_kw > 0.05) st = ['🟢','Generando','La instalación está produciendo con normalidad.'];
   else st = sun ? ['🟡','Sin producción con sol','Hay irradiancia pero la potencia es nula: posible falla del inversor, protección disparada o corte de red.'] : ['⚪','Sin producción','No hay sol suficiente en este momento.'];
   const pts = r.data.slice().reverse(), step = Math.ceil(pts.length/150) || 1, S = pts.filter((_,i) => i % step == 0);
-  box.innerHTML = `${deviceKeyCard()}
+  box.innerHTML = `${deviceKeyCard()}${simulatorCard()}
     <div class="card"><h2 style="font-size:22px">${st[0]} ${st[1]}</h2><p>${st[2]}</p><small class="mu">${L ? 'Último dato: ' + new Date(L.ts).toLocaleString() : ''}</small></div>
     ${L ? `<div class="grid"><div class="card kpi"><small>Potencia actual</small><b>${f1(L.power_kw)} kW</b></div><div class="card kpi"><small>Energía de hoy</small><b>${L.energy_kwh != null ? f1(L.energy_kwh) + ' kWh' : '–'}</b></div><div class="card kpi"><small>Irradiancia</small><b>${L.irr_wm2 != null ? Math.round(L.irr_wm2) + ' W/m²' : '–'}</b></div></div>
     <div class="card"><h2>Potencia (kW) – últimas 24 h</h2>${chart(S.map(x => new Date(x.ts).toTimeString().slice(0,5)), [{n:'kW', v:S.map(x => +x.power_kw)}])}</div>` : ''}
@@ -462,6 +485,116 @@ async function liveLoad(){
     <div class="row" style="margin-top:8px"><button class="pri" onclick="addDevice()">Crear dispositivo para este proyecto</button></div>
     <p class="mu">Los dispositivos envían sus lecturas a <code>${esc(SUPABASE_URL)}/rest/v1/rpc/ingest_reading</code> con su clave. Consultá <b>README.md</b> para la configuración del endpoint y el formato de los datos.</p></div>`;
   drawCharts();
+}
+function setSimStatus(message, type){
+  sim.message = message;
+  sim.messageType = type || '';
+  const status = $('#simStatus');
+  if (status) {
+    status.textContent = message;
+    status.className = `sim-status ${sim.messageType}`;
+  }
+}
+function simReadingInput(){
+  const key = $('#simKey').value.trim(), powerText = $('#simPower').value, energyText = $('#simEnergy').value;
+  const power = Number(powerText), energy = Number(energyText);
+  sim.key = key;
+  sim.power = powerText;
+  sim.energy = energyText;
+  if (!/^[0-9a-f]{64}$/.test(key)) {
+    setSimStatus('Pegá una clave válida de 64 caracteres hexadecimales.', 'error');
+    return null;
+  }
+  if (powerText === '' || !Number.isFinite(power) || power < 0 || power > 100000) {
+    setSimStatus('Ingresá una potencia válida entre 0 y 100000 kW.', 'error');
+    return null;
+  }
+  if (energyText === '' || !Number.isFinite(energy) || energy < 0 || energy > 1000000000) {
+    setSimStatus('Ingresá una energía válida entre 0 y 1000000000 kWh.', 'error');
+    return null;
+  }
+  return {key, power, energy};
+}
+async function sendSimReading(){
+  if (sim.sending) return;
+  const payload = simReadingInput();
+  if (!payload) {
+    if (sim.auto) {
+      clearInterval(sim.timer);
+      sim.timer = null;
+      sim.auto = false;
+      const checkbox = $('#simAuto');
+      if (checkbox) checkbox.checked = false;
+    }
+    return;
+  }
+
+  sim.sending = true;
+  const requestId = ++sim.requestId, controller = new AbortController();
+  sim.controller = controller;
+  const sendButton = $('#simStatus') && $('#simStatus').parentElement.querySelector('button.pri');
+  if (sendButton) sendButton.disabled = true;
+  setSimStatus('Enviando lectura a Supabase…');
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/ingest_reading`, {
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        apikey:SUPABASE_KEY,
+        Authorization:`Bearer ${SUPABASE_KEY}`
+      },
+      body:JSON.stringify({
+        p_device_key:payload.key,
+        p_power_kw:payload.power,
+        p_energy_kwh:payload.energy,
+        p_ts:new Date().toISOString()
+      }),
+      signal:controller.signal
+    });
+    let result = null;
+    const responseText = await response.text();
+    if (responseText) {
+      try { result = JSON.parse(responseText); }
+      catch (error) {
+        if (response.ok) throw new Error('Supabase devolvió una respuesta inválida.');
+      }
+    }
+    if (!response.ok || !result || result.ok !== true) {
+      const detail = result && (result.message || result.error);
+      throw new Error(detail || `Supabase no confirmó la lectura (HTTP ${response.status}).`);
+    }
+    if (requestId !== sim.requestId) return;
+    setSimStatus(`Lectura enviada correctamente (${new Date().toLocaleTimeString()})${sim.auto ? '. Envío automático activo.' : '.'}`, 'success');
+    await liveLoad();
+  } catch (error) {
+    if (requestId === sim.requestId) setSimStatus(`No se pudo enviar la lectura: ${error.message}`, 'error');
+  } finally {
+    if (requestId === sim.requestId) {
+      sim.sending = false;
+      sim.controller = null;
+      const button = $('#simStatus') && $('#simStatus').parentElement.querySelector('button.pri');
+      if (button) button.disabled = false;
+    }
+  }
+}
+function setSimAuto(enabled){
+  clearInterval(sim.timer);
+  sim.timer = null;
+  sim.auto = !!enabled;
+  const checkbox = $('#simAuto');
+  if (checkbox) checkbox.checked = sim.auto;
+  if (!sim.auto) {
+    setSimStatus('Envío automático detenido.');
+    return;
+  }
+  if (!simReadingInput()) {
+    sim.auto = false;
+    if (checkbox) checkbox.checked = false;
+    return;
+  }
+  setSimStatus('Envío automático activo: se enviará una lectura ahora y luego cada 10 segundos.');
+  sendSimReading();
+  sim.timer = setInterval(sendSimReading, 10000);
 }
 async function addDevice(){
   const {data, error} = await sb.rpc('create_device', {p_project_id:cur, p_name:'Dispositivo'});
