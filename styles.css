@@ -201,6 +201,7 @@ svg text { fill: var(--mu); font-size: 11px; }
 .csv { height: 120px; font-family: monospace; font-size: 12px; }
 .auth { max-width: 460px; margin: 7vh auto; padding: 28px; }
 .auth h2 { font-size: 23px; }
+.reset-note { color: var(--ok); font-size: 13px; }
 .toast { position: fixed; z-index: 40; bottom: 24px; left: 50%; max-width: 90vw; padding: 12px 18px; transform: translateX(-50%); border: 1px solid var(--bd); border-radius: 12px; background: var(--card); color: var(--tx); box-shadow: 0 8px 28px rgba(0,0,0,.2); }
 .kpi small + small { display: block; margin-top: 5px; }
 .cv { position: relative; height: 240px; }

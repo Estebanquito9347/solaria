@@ -26,6 +26,25 @@ let realSb = null;
 try { realSb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY); } catch (e) { console.warn('Supabase no disponible:', e.message); }
 let sb = realSb;         // en modo local se reemplaza por localDB(), que imita la misma API
 let pending = null;   // email que está esperando el código de confirmación
+let recoveryMode = false, forgotPasswordMode = false, resetEmail = '', resetMessage = '', authNotice = '';
+if (realSb) realSb.auth.onAuthStateChange((event, session) => {
+  if (event === 'PASSWORD_RECOVERY') {
+    localMode = false;
+    sb = realSb;
+    ls.set('solaria_mode', null);
+    recoveryMode = true;
+    forgotPasswordMode = false;
+    user = session && session.user || null;
+    render();
+  }
+});
+const authHash = new URLSearchParams(location.hash.slice(1));
+if (authHash.get('type') === 'recovery') recoveryMode = true;
+if (authHash.has('error_description')) {
+  authNotice = 'El enlace no es válido o venció. Solicitá uno nuevo para recuperar la contraseña.';
+  forgotPasswordMode = true;
+  if (/^https?:$/.test(location.protocol)) history.replaceState(null, '', location.pathname + location.search);
+}
 async function auth(reg){
   if (!realSb) return $('#err').textContent = 'Supabase no está configurado (revisá config.js). Podés usar el modo demostración.';
   const e = $('#err'), email = $('#u').value.trim(), pass = $('#p').value, name = reg ? $('#nm').value.trim() : '';
@@ -48,6 +67,59 @@ async function verify(){
 }
 async function resend(){ await sb.auth.resend({type:'signup', email:pending}); $('#err').textContent = 'Te enviamos un código nuevo.'; }
 function cancelVerify(){ pending = null; render(); }
+function showForgotPassword(){
+  resetEmail = $('#u') ? $('#u').value.trim() : '';
+  resetMessage = '';
+  forgotPasswordMode = true;
+  render();
+}
+function backToLogin(){
+  forgotPasswordMode = false;
+  resetMessage = '';
+  render();
+}
+async function sendPasswordReset(){
+  const email = $('#resetEmail').value.trim(), err = $('#err');
+  if (!email) return err.textContent = 'Ingresá el email asociado a tu cuenta.';
+  if (!realSb) return err.textContent = 'Supabase no está configurado. No se puede enviar el enlace.';
+  resetEmail = email;
+  const button = $('#sendReset');
+  button.disabled = true;
+  err.textContent = '';
+  try {
+    const options = /^https?:$/.test(location.protocol) ? {redirectTo:location.origin + location.pathname} : {};
+    const {error} = await sb.auth.resetPasswordForEmail(email, options);
+    if (error) return err.textContent = error.message;
+    resetMessage = 'Si el email está asociado a una cuenta, recibirás un enlace para cambiar la contraseña. Revisá también el correo no deseado.';
+    render();
+  } catch (error) {
+    err.textContent = 'No se pudo enviar el enlace: ' + error.message;
+  } finally {
+    if (button.isConnected) button.disabled = false;
+  }
+}
+async function saveNewPassword(){
+  const password = $('#newPass').value, confirmation = $('#confirmPass').value, err = $('#err');
+  if (password.length < 6) return err.textContent = 'La contraseña debe tener al menos 6 caracteres.';
+  if (password !== confirmation) return err.textContent = 'Las contraseñas no coinciden.';
+  if (!realSb) return err.textContent = 'Supabase no está disponible para actualizar la contraseña.';
+  const button = $('#savePassword');
+  button.disabled = true;
+  err.textContent = '';
+  try {
+    const {data, error} = await sb.auth.updateUser({password});
+    if (error) return err.textContent = error.message;
+    if (!data.user) return err.textContent = 'No se pudo validar la sesión de recuperación. Solicitá un enlace nuevo.';
+    recoveryMode = false;
+    resetMessage = '';
+    await start(data.user);
+    toast('Contraseña actualizada correctamente.');
+  } catch (error) {
+    err.textContent = 'No se pudo actualizar la contraseña: ' + error.message;
+  } finally {
+    if (button.isConnected) button.disabled = false;
+  }
+}
 async function start(u){ user = u; await loadAll(); boot(); }
 async function logout(){
   if (localMode) { localMode = false; ls.set('solaria_mode', null); sb = realSb; } else await sb.auth.signOut();
@@ -1098,6 +1170,16 @@ async function askLLM(question){
 
 /* ---------- arranque ---------- */
 function render(){
+  if (recoveryMode) {
+    liveStop();
+    $('#top').hidden = $('#nav').hidden = true;
+    $('#app').innerHTML = `<div class="card auth"><h2>Elegí una contraseña nueva</h2>
+      <p class="mu">La contraseña debe tener al menos 6 caracteres.</p>
+      <div class="row"><label>Nueva contraseña<input id="newPass" type="password" autocomplete="new-password" onkeydown="if(event.key==='Enter')saveNewPassword()"></label>
+      <label>Repetí la contraseña<input id="confirmPass" type="password" autocomplete="new-password" onkeydown="if(event.key==='Enter')saveNewPassword()"></label></div>
+      <div class="row"><button id="savePassword" class="pri" onclick="saveNewPassword()">Guardar contraseña</button></div><div class="err" id="err"></div></div>`;
+    return;
+  }
   if (!user) {
     liveStop();
     $('#top').hidden = $('#nav').hidden = true;
@@ -1105,9 +1187,17 @@ function render(){
       $('#app').innerHTML = `<div class="card auth"><h2>Confirmá tu email</h2><p>Te enviamos un código a <b>${esc(pending)}</b>.</p><div class="row"><label>Código<input id="cd" inputmode="numeric" autocomplete="one-time-code"></label><button class="pri" onclick="verify()">Confirmar</button></div><div class="row"><button onclick="resend()">Reenviar código</button><button onclick="cancelVerify()">Volver</button></div><div class="err" id="err"></div></div>`;
       return;
     }
-    $('#app').innerHTML = `<div class="card auth"><h2>☀️ Ingresá a SolarIA</h2><div class="row"><label>Usuario (solo para crear cuenta)<input id="nm"></label><label>Email<input id="u" type="email"></label><label>Clave<input id="p" type="password"></label></div>
-      <div class="row"><button class="pri" onclick="auth(false)">Ingresar</button><button onclick="auth(true)">Crear cuenta</button></div>
-      <div class="row"><button onclick="enterLocal()">Probar en modo demostración (sin cuenta)</button></div><div class="err" id="err"></div>
+    if (forgotPasswordMode) {
+      $('#app').innerHTML = `<div class="card auth"><h2>Recuperar contraseña</h2>
+        <p class="mu">Ingresá el email de tu cuenta y te enviaremos un enlace para crear una contraseña nueva.</p>
+        <div class="row"><label>Email<input id="resetEmail" type="email" autocomplete="email" value="${esc(resetEmail)}"></label></div>
+        <div class="row"><button id="sendReset" class="pri" onclick="sendPasswordReset()">Enviar enlace</button><button onclick="backToLogin()">Volver al inicio de sesión</button></div>
+        <p class="reset-note">${esc(resetMessage)}</p><div class="err" id="err">${esc(authNotice)}</div></div>`;
+      return;
+    }
+    $('#app').innerHTML = `<div class="card auth"><h2>☀️ Ingresá a SolarIA</h2><div class="row"><label>Usuario (solo para crear cuenta)<input id="nm"></label><label>Email<input id="u" type="email"></label><label>Clave<input id="p" type="password" autocomplete="current-password"></label></div>
+      <div class="row"><button class="pri" onclick="auth(false)">Ingresar</button><button onclick="auth(true)">Crear cuenta</button><button onclick="showForgotPassword()">Olvidé mi contraseña</button></div>
+      <div class="row"><button onclick="enterLocal()">Probar en modo demostración (sin cuenta)</button></div><div class="err" id="err">${esc(authNotice)}</div>
       <p class="mu">Cada usuario ve solo sus propios proyectos. Los datos se guardan en Supabase. El modo demostración los guarda solo en este navegador.</p></div>`;
     return;
   }
@@ -1132,7 +1222,7 @@ function boot(){
 }
 $('#cur').onchange = e => { cur = e.target.value; render(); };
 (async () => {
-  if (ls.get('solaria_mode') === 'local') return enterLocal();
+  if (ls.get('solaria_mode') === 'local' && !recoveryMode) return enterLocal();
   if (!realSb) return boot();
   const {data} = await sb.auth.getSession();
   data.session ? await start(data.session.user) : boot();
