@@ -1007,12 +1007,26 @@ async function importCSV(){
 
 /* ---------- clima de la ubicación ---------- */
 const wxCache = {};
-const wmo = c => c === 0 ? '☀️' : c <= 2 ? '🌤️' : c === 3 ? '☁️' : c <= 48 ? '🌫️' : c <= 67 ? '🌧️' : c <= 77 ? '❄️' : c <= 82 ? '🌦️' : '⛈️';
+const wmo = c => {
+  if (c === 0) return {icon:'☀️', text:'Despejado'};
+  if (c === 1) return {icon:'🌤️', text:'Mayormente despejado'};
+  if (c === 2) return {icon:'⛅', text:'Parcialmente nublado'};
+  if (c === 3) return {icon:'☁️', text:'Nublado'};
+  if (c === 45 || c === 48) return {icon:'🌫️', text:'Niebla'};
+  if ([51,53,55].includes(c)) return {icon:'🌦️', text:'Llovizna'};
+  if ([56,57,66,67].includes(c)) return {icon:'🌧️', text:'Precipitación engelante'};
+  if ([61,63,65].includes(c)) return {icon:'🌧️', text:'Lluvia'};
+  if (c === 71 || c === 73 || c === 75 || c === 77) return {icon:'❄️', text:'Nieve'};
+  if (c === 80 || c === 81 || c === 82) return {icon:'🌦️', text:'Chaparrones'};
+  if (c === 85 || c === 86) return {icon:'🌨️', text:'Chaparrones de nieve'};
+  if (c === 95 || c === 96 || c === 99) return {icon:'⛈️', text:'Tormenta'};
+  return {icon:'☁️', text:'Condición no disponible'};
+};
 const cloudText = p => p <= 20 ? 'cielo despejado' : p <= 60 ? 'parcialmente nublado' : 'muy nublado';
 async function wxFor(ins){
   const g = await geoFor(ins), key = g.lat + ',' + g.lon, c = wxCache[key];
   if (c && Date.now() - c.t < 9e5) return c.v;
-  const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${g.lat}&longitude=${g.lon}&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,cloud_cover,wind_speed_10m,shortwave_radiation,is_day&hourly=shortwave_radiation&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,shortwave_radiation_sum&timezone=auto&forecast_days=7`);
+  const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${g.lat}&longitude=${g.lon}&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,cloud_cover,wind_speed_10m,shortwave_radiation,is_day&hourly=shortwave_radiation,precipitation_probability&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,shortwave_radiation_sum&timezone=auto&forecast_days=7`);
   if (!r.ok) throw new Error('Open-Meteo no respondió');
   const j = await r.json(), v = {place:g.name, c:j.current, h:j.hourly, d:j.daily};
   wxCache[key] = {t:Date.now(), v}; return v;
@@ -1024,21 +1038,25 @@ async function wxCard(){
     const w = await wxFor(ins); if ($('#wx') !== box) return;
     const k = kwp(ins), a = analyze(cur), prv = a.pr || .8, c = w.c, d = w.d;
     const i0 = Math.max(0, w.h.time.findIndex(t => t.slice(0,13) >= c.time.slice(0,13)));
+    const nowWeather = wmo(c.weather_code), probNow = w.h.precipitation_probability[i0];
     const hrs = w.h.time.slice(i0, i0 + 24), pw = w.h.shortwave_radiation.slice(i0, i0 + 24).map(x => +(k * x/1000 * prv).toFixed(2));
     const mine = rows(cur).filter(g => g.irr > .5).slice(-30), avg = mine.length ? mine.reduce((s,g) => s + g.irr, 0)/mine.length : null, tom = d.shortwave_radiation_sum[1]/3.6;
     const notes = [`Ahora hay ${cloudText(c.cloud_cover)} (${c.cloud_cover}% de nubes).`];
     if (!c.is_day) notes.push('Es de noche: no hay generación.'); else if (k > 0) notes.push(`Con esta radiación, tu instalación debería estar entregando unos ${f1(k*c.shortwave_radiation/1000*prv)} kW.`);
     if (avg) { const df = (tom - avg)/avg*100; notes.push(`Mañana se espera ${Math.abs(df) < 5 ? 'un sol similar' : f1(Math.abs(df)) + '% ' + (df > 0 ? 'más' : 'menos') + ' de sol'} que en tu promedio reciente (${f1(tom)} vs. ${f1(avg)} kWh/m²).`); }
-    if (d.precipitation_sum[1] >= 1) notes.push('Mañana se esperan lluvias: ayudan a limpiar los paneles, pero bajan la generación ese día.');
+    if (d.precipitation_probability_max[1] > 0) notes.push(`Mañana hay hasta ${d.precipitation_probability_max[1]}% de probabilidad de precipitación y se estiman ${f1(d.precipitation_sum[1])} mm.`);
+    if (d.precipitation_sum[1] >= 1) notes.push('La lluvia podría reducir la generación de ese día.');
     const dia = t => new Date(t + 'T12:00').toLocaleDateString('es-AR', {weekday:'short', day:'numeric', month:'short'});
-    box.innerHTML = `<div class="card"><h2>${wmo(c.weather_code)} Clima en ${esc(w.place)}</h2><div class="grid">
+    box.innerHTML = `<div class="card"><h2>${nowWeather.icon} ${nowWeather.text} en ${esc(w.place)}</h2><div class="grid">
       <div class="kpi"><small>Temperatura</small><b>${f1(c.temperature_2m)} °C</b></div><div class="kpi"><small>Nubosidad</small><b>${c.cloud_cover}%</b></div>
       <div class="kpi"><small>Radiación solar</small><b>${Math.round(c.shortwave_radiation)} W/m²</b></div><div class="kpi"><small>Viento</small><b>${f1(c.wind_speed_10m)} km/h</b></div>
-      <div class="kpi"><small>Lluvia</small><b>${c.precipitation} mm</b></div></div></div>
+      <div class="kpi"><small>Precipitación estimada ahora</small><b>${f1(c.precipitation)} mm</b></div><div class="kpi"><small>Probabilidad esta hora</small><b>${probNow ?? '–'}%</b></div></div>
+      <small class="mu">Condición estimada por Open-Meteo a las ${esc(c.time.slice(11,16))}; el ícono describe el estado meteorológico y no confirma lluvia observada. La probabilidad y los mm son estimaciones distintas y pueden diferir de Google.</small></div>
     <div class="card"><h2>🤖 Lectura de SolarIA</h2>${notes.map(n => `<p>${esc(n)}</p>`).join('')}</div>
     <div class="card"><h2>Potencia esperada – próximas 24 h (kW)</h2>${chart(hrs.map(t => t.slice(11,16)), [{n:'kW esperados', v:pw}])}<small class="mu">Radiación pronosticada × ${f1(k)} kWp × PR ${f1(prv*100)}%${a.pr ? ' (mediana histórica)' : ' (valor por defecto)'}. Datos: Open-Meteo.</small></div>
-    <div class="card sc"><h2>Próximos 7 días</h2><table><tr><th>Día</th><th></th><th>Mín / Máx</th><th>Irradiancia</th><th>Generación esperada</th><th>Lluvia</th></tr>
-    ${d.time.map((t,i) => `<tr><td>${esc(dia(t))}</td><td>${wmo(d.weather_code[i])}</td><td>${Math.round(d.temperature_2m_min[i])}° / ${Math.round(d.temperature_2m_max[i])}°</td><td>${f1(d.shortwave_radiation_sum[i]/3.6)} kWh/m²</td><td>${k > 0 ? f1(d.shortwave_radiation_sum[i]/3.6*k*prv) + ' kWh' : '–'}</td><td>${f1(d.precipitation_sum[i])} mm</td></tr>`).join('')}</table></div>`;
+    <div class="card sc"><h2>Próximos 7 días</h2><table><tr><th>Día</th><th>Condición</th><th>Mín / Máx</th><th>Irradiancia</th><th>Generación esperada</th><th>Prob. precipitación</th><th>Lluvia estimada</th></tr>
+    ${d.time.map((t,i) => { const weather = wmo(d.weather_code[i]); return `<tr><td>${esc(dia(t))}</td><td>${weather.icon} ${weather.text}</td><td>${Math.round(d.temperature_2m_min[i])}° / ${Math.round(d.temperature_2m_max[i])}°</td><td>${f1(d.shortwave_radiation_sum[i]/3.6)} kWh/m²</td><td>${k > 0 ? f1(d.shortwave_radiation_sum[i]/3.6*k*prv) + ' kWh' : '–'}</td><td>${d.precipitation_probability_max[i]}%</td><td>${f1(d.precipitation_sum[i])} mm</td></tr>`; }).join('')}</table>
+      <small class="mu">Pronóstico de Open-Meteo para la ubicación del proyecto; otros servicios pueden diferir por modelo, resolución y hora de actualización.</small></div>`;
     drawCharts();
   } catch (e) { if ($('#wx') === box) box.innerHTML = `<div class="card"><h2>🌦️ Clima</h2><p class="mu">No se pudo obtener el clima: ${esc(e.message)}</p></div>`; }
 }
